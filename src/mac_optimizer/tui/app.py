@@ -33,7 +33,8 @@ class MacOptimizerApp(App):
         Binding("a", "select_all", "Seleziona Tutti (a)", priority=True),
         Binding("n", "select_none", "Deseleziona Tutti (n)", priority=True),
         Binding("s", "rescan", "Riscansiona (s)", priority=True),
-        Binding("q", "quit", "Esci (q)", priority=True),
+        Binding("escape", "smart_quit", "Indietro / Esci", priority=True),
+        Binding("q", "smart_quit", "Esci (q)", priority=True),
     ]
 
     DEFAULT_CSS = """
@@ -313,10 +314,36 @@ class MacOptimizerApp(App):
             m.scan_done = False
         self.scan_sizes_worker()
 
+    def _refresh_disk_info(self) -> None:
+        self.disk_info = get_disk_free_info()
+        disk_str = f"💾 Disco: {self.disk_info['free']} liberi su {self.disk_info['total']} ({self.disk_info['percent']} usato)"
+        try:
+            self.query_one("#disk_label", Label).update(disk_str)
+        except Exception:
+            pass
+
     def action_run_cleaning(self) -> None:
-        """Avvia la schermata di esecuzione dei moduli selezionati."""
+        """Avvia la schermata di esecuzione dei moduli selezionati o conferma uscita se già completata."""
+        if isinstance(self.screen, ExecutionScreen):
+            if self.screen.completed:
+                self.screen.action_finish()
+            return
+
         selected = [m for m in self.modules if m.selected]
         if not selected:
             self.notify("Nessun modulo selezionato per la pulizia!", severity="warning")
             return
-        self.push_screen(ExecutionScreen(selected, self.dry_run))
+
+        def _on_clean_done(freed_bytes: Optional[int] = None) -> None:
+            self._refresh_disk_info()
+            if not self.dry_run and freed_bytes:
+                self.action_rescan()
+
+        self.push_screen(ExecutionScreen(selected, self.dry_run), _on_clean_done)
+
+    def action_smart_quit(self) -> None:
+        """Chiude la schermata di esecuzione o esce dall'applicazione."""
+        if isinstance(self.screen, ExecutionScreen):
+            self.screen.action_finish()
+            return
+        self.exit()

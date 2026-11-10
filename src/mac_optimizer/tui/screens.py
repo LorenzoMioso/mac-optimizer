@@ -81,6 +81,8 @@ class ExecutionScreen(Screen):
         log.write(f"\n{header_tag} - Avvio pulizia di {len(self.modules_to_run)} moduli selezionati...\n")
 
         for idx, m in enumerate(self.modules_to_run, 1):
+            if not self.is_mounted:
+                break
             log.write(f"[bold cyan]▶ [{idx}/{len(self.modules_to_run)}] {m.name}[/]...")
             try:
                 res: CleanResult = m.clean_func(self.dry_run)
@@ -90,7 +92,8 @@ class ExecutionScreen(Screen):
             except Exception as e:
                 log.write(f"   [bold red]❌ Errore durante l'esecuzione: {e}[/]")
 
-            self.call_from_thread(pbar.advance, 1)
+            if self.is_mounted:
+                self.app.call_from_thread(pbar.advance, 1)
 
         summary_msg = f"[bold green]✔ Operazione completata![/] Spazio recuperato / stimato: [bold cyan]{format_bytes(self.total_freed_bytes)}[/]"
         log.write("\n" + "=" * 60)
@@ -98,7 +101,8 @@ class ExecutionScreen(Screen):
         log.write("[bold yellow]Premi [Invio] o [q] per terminare.[/]\n")
 
         self.completed = True
-        self.call_from_thread(status.update, "Completato! Premi [Invio] o [q] per uscire.")
+        if self.is_mounted:
+            self.app.call_from_thread(status.update, "Completato! Premi [Invio] o [q] per uscire.")
 
     def action_finish(self) -> None:
-        self.app.pop_screen()
+        self.dismiss(self.total_freed_bytes)

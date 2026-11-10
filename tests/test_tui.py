@@ -65,6 +65,15 @@ def test_tui_app_navigation_and_bindings(monkeypatch, tmp_path):
             # 6. Testa tasto INVIO per avviare l'esecuzione della pulizia
             await pilot.press("enter")
             assert isinstance(app.screen, ExecutionScreen)
-            await pilot.press("q")
+            exec_screen = app.screen
+            
+            # Attende che il worker completi l'esecuzione in dry-run
+            while not exec_screen.completed:
+                await pilot.pause(0.05)
+            
+            assert exec_screen.completed is True
+            # Esci dallo schermo di esecuzione con Invio
+            await pilot.press("enter")
+            assert not isinstance(app.screen, ExecutionScreen)
 
     asyncio.run(_run())
