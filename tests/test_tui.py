@@ -54,13 +54,20 @@ def test_tui_app_navigation_and_bindings(monkeypatch, tmp_path):
             assert mod.selected is not prev_sel
             assert saved_state["selected_modules"][mod.id] == mod.selected
 
-            # 4. Testa deselezione totale con 'n'
+            # 4. Testa deselezione totale con 'n' e aggiornamento contatori
             await pilot.press("n")
             assert sum(1 for m in app.modules if m.selected) == 0
+            stats_lbl = app.query_one("#selection_stats")
+            top_lbl = app.query_one("#selection_top_label")
+            assert "0/" in str(stats_lbl.render())
+            assert "0/" in str(top_lbl.render())
 
-            # 5. Testa selezione tutti con 'a'
+            # 5. Testa selezione tutti con 'a' e aggiornamento contatori
             await pilot.press("a")
-            assert sum(1 for m in app.modules if m.selected) > 0
+            sel_count = sum(1 for m in app.modules if m.selected)
+            assert sel_count > 0
+            assert f"{sel_count}/" in str(stats_lbl.render())
+            assert f"{sel_count}/" in str(top_lbl.render())
 
             # 6. Testa tasto INVIO per avviare l'esecuzione della pulizia
             await pilot.press("enter")

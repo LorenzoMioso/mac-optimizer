@@ -44,7 +44,6 @@ class MacOptimizerApp(App):
     }
     #top_info_bar {
         height: 4;
-        dock: top;
         background: #161b22;
         padding: 0 2;
         border-bottom: solid #30363d;
@@ -60,8 +59,14 @@ class MacOptimizerApp(App):
         content-align: left middle;
     }
     #disk_label {
-        width: 1fr;
+        width: auto;
         color: #c9d1d9;
+        margin-right: 2;
+    }
+    #selection_top_label {
+        width: 1fr;
+        text-style: bold;
+        color: #f0f6fc;
     }
     #mode_label {
         width: auto;
@@ -93,13 +98,12 @@ class MacOptimizerApp(App):
     }
     #bottom_info_bar {
         height: 4;
-        dock: bottom;
         background: #161b22;
         border-top: solid #30363d;
         padding: 0 2;
     }
     #module_desc {
-        height: 2;
+        height: 1;
         content-align: left middle;
         color: #58a6ff;
     }
@@ -126,6 +130,7 @@ class MacOptimizerApp(App):
             with Horizontal(id="status_row"):
                 disk_str = f"💾 Disco: {self.disk_info['free']} liberi su {self.disk_info['total']} ({self.disk_info['percent']} usato)"
                 yield Label(disk_str, id="disk_label")
+                yield Label(self._get_selection_top_text(), id="selection_top_label")
                 yield Label(self._get_mode_badge(), id="mode_label")
 
         with Container(id="main_container"):
@@ -151,10 +156,19 @@ class MacOptimizerApp(App):
             return "[bold #ffcc00]🔍 MODALITÀ: DRY-RUN (Simulazione)[/]"
         return "[bold #00ff66]⚡ MODALITÀ: ESECUZIONE REALE[/]"
 
+    def _get_selection_top_text(self) -> str:
+        sel_count = sum(1 for m in self.modules if m.selected)
+        sel_bytes = sum(m.estimated_bytes for m in self.modules if m.selected)
+        still_scanning = any(not m.scan_done for m in self.modules)
+        scan_tag = " [dim]⏳[/]" if still_scanning else ""
+        return f"✨ Da liberare: [bold #00ff66]{format_bytes(sel_bytes)}[/] [dim]({sel_count}/{len(self.modules)})[/]{scan_tag}"
+
     def _get_selection_stats_text(self) -> str:
         sel_count = sum(1 for m in self.modules if m.selected)
         sel_bytes = sum(m.estimated_bytes for m in self.modules if m.selected)
-        return f"Totale selezionato: [bold #00e5ff]{format_bytes(sel_bytes)}[/] ({sel_count}/{len(self.modules)} moduli attivi)"
+        still_scanning = any(not m.scan_done for m in self.modules)
+        scan_tag = " [dim]⏳ (scansione dimensioni in corso...)[/]" if still_scanning else ""
+        return f"Spazio recuperabile stimato: [bold #00ff66]{format_bytes(sel_bytes)}[/] ({sel_count}/{len(self.modules)} moduli selezionati){scan_tag}"
 
     def _build_option_prompt(self, m: ModuleDef) -> Text:
         """Costruisce il testo Rich formattato ad alto contrasto per un modulo."""
@@ -267,6 +281,9 @@ class MacOptimizerApp(App):
             self.call_from_thread(self._safe_replace_prompt, m.id, new_prompt)
             self.call_from_thread(self._refresh_stats)
 
+        # Aggiornamento finale a fine scansione
+        self.call_from_thread(self._refresh_stats)
+
     def _safe_replace_prompt(self, mod_id: str, prompt: Text) -> None:
         ol = self.query_one(OptionList)
         try:
@@ -275,7 +292,14 @@ class MacOptimizerApp(App):
             pass
 
     def _refresh_stats(self) -> None:
-        self.query_one("#selection_stats", Label).update(self._get_selection_stats_text())
+        try:
+            self.query_one("#selection_stats", Label).update(self._get_selection_stats_text())
+        except Exception:
+            pass
+        try:
+            self.query_one("#selection_top_label", Label).update(self._get_selection_top_text())
+        except Exception:
+            pass
 
     def action_toggle_dry_run(self) -> None:
         """Alterna tra modalità simulazione (dry-run) ed esecuzione effettiva."""
