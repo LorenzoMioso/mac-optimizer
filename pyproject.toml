@@ -1,0 +1,21 @@
+[project]
+name = "mac-optimizer"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "Lorenzo Mioso", email = "lorenzo.mioso@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "pytest>=9.2.0",
+    "pytest-mock>=3.17.0",
+    "rich>=15.0.0",
+    "textual>=8.2.8",
+]
+
+[project.scripts]
+mac-optimizer = "mac_optimizer:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"

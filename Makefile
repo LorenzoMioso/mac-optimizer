@@ -1,9 +1,11 @@
-.PHONY: help tui dry-run clean clean-auto list scan simslim-on simslim-off remove-ai status
+.PHONY: help tui dry-run clean clean-auto list test sync simslim-on simslim-off remove-ai
 
 help:
 	@echo "Mac Developer Cleaner & Optimizer"
 	@echo "================================="
-	@echo "make tui         - Avvia la Terminal UI interattiva (default)"
+	@echo "make tui         - Avvia la Terminal UI interattiva Textual (default)"
+	@echo "make test        - Esegue la suite completa di test con pytest via uv"
+	@echo "make sync        - Sincronizza l'ambiente virtuale e le dipendenze con uv"
 	@echo "make dry-run     - Simula la pulizia completa senza cancellare file"
 	@echo "make clean       - Avvia la pulizia chiedendo conferma"
 	@echo "make clean-auto  - Esegue la pulizia automatica completa (-y)"
@@ -12,20 +14,26 @@ help:
 	@echo "make simslim-off - Ripristina i demoni del Simulatore iOS"
 	@echo "make remove-ai   - Disattiva Apple Intelligence locale via removemacai"
 
+sync:
+	uv sync
+
+test:
+	uv run pytest -v
+
 tui:
-	./clean_mac.py --tui
+	uv run mac-optimizer --tui
 
 dry-run:
-	./clean_mac.py --dry-run
+	uv run mac-optimizer --dry-run
 
 clean:
-	./clean_mac.py --cli
+	uv run mac-optimizer --cli
 
 clean-auto:
-	./clean_mac.py --yes
+	uv run mac-optimizer --yes
 
 list:
-	./clean_mac.py --list
+	uv run mac-optimizer --list
 
 simslim-on:
 	@which simslim >/dev/null 2>&1 && simslim on || echo "simslim non installato (esegui: brew install mobai-app/tap/simslim)"

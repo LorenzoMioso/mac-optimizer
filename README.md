@@ -7,20 +7,22 @@
 
 ## ⚡ In Sintesi: Cosa fa questa repository
 
-1. **`clean_mac.py` (Script con Terminal UI a Checkmark interattiva):**  
-   Analizza e ripulisce in sicurezza oltre **30–50 GB** di cache di compilazione, archivi storici, runtime orfani, container e file temporanei senza toccare credenziali, account, cookie o repository di lavoro.
+1. **Architettura Modulare con Terminal UI basata su `Textual`:**  
+   Il progetto è strutturato come un pacchetto Python modulare in `src/mac_optimizer/` con gestione delle dipendenze tramite **`uv`**.
+   La nuova Terminal UI è sviluppata con la libreria **Textual**, garantendo interfaccia moderna, reattiva e calcolo delle dimensioni in background tramite worker asincroni.
 2. **Terminal UI Interattiva (TUI):**  
-   All'avvio mostra direttamente l'elenco delle attività di pulizia divise in **categorie**, tutte **attive di default con checkmark `[✔]`**.
+   All'avvio mostra l'elenco delle attività di pulizia divise in **categorie**, tutte **attive di default con checkmark `[✔]`**.
    - Navigazione fluida con i tasti freccia **`↑ / ↓`**.
    - Con la **barra spaziatrice** puoi disabilitare o riattivare le opzioni.
    - **Selezione persistente:** le tue scelte vengono salvate automaticamente in `~/.config/mac-optimizer/config.json` e ricordate alle esecuzioni successive.
-   - **Gestione viewport per elenchi lunghi:** supporta finestre di terminale di qualsiasi dimensione con scorrimento dinamico.
    - **Dry-Run integrato:** premi **`d`** per alternare in tempo reale tra simulazione sicura ed esecuzione effettiva.
-3. **Gestione Intelligente dei Simulatori iOS:**  
+3. **Suite Completa di Test Automatici con `pytest`:**  
+   Ogni categoria e modulo dispone di test dedicati in `tests/` (33 test unitari e headless TUI) per garantire che nel tempo nessun comando o percorso si rompa.
+4. **Gestione Intelligente dei Simulatori iOS:**  
    Rileva automaticamente tutti i runtime e i simulatori installati tramite `xcrun simctl`. Mantiene sempre intatta **l'ultima versione attiva** (es. iOS 27.0) ed elimina in sicurezza i runtime precedenti obsoleti (es. iOS 26.5) e i relativi simulatori virtuali associati, recuperando tipicamente **oltre 12 GB** di spazio SSD.
-4. **Xcode Archives Completi:**  
+5. **Xcode Archives Completi:**  
    Elimina **tutti** gli archivi `.xcarchive` accumulati senza mantenere versioni storiche, liberando subito fino a decine di gigabyte.
-5. **Guide di Ottimizzazione RAM di Sistema:**  
+6. **Guide di Ottimizzazione RAM di Sistema:**  
    - [`guida_simslim.md`](guida_simslim.md): Riduzione RAM del Simulatore iOS da **3.5 GB a < 900 MB**.  
    - [`guida_disabilitare_apple_intelligence.md`](guida_disabilitare_apple_intelligence.md): Recupero di **> 12 GB SSD** e **1.5 GB RAM** disattivando i modelli AI locali su macOS 15+.
 
@@ -157,3 +159,62 @@ make clean-auto
 - **Nessuna perdita di credenziali:** Non tocca token Git, portachiavi Keychain, chiavi SSH, profili browser, password salvate, cronologie o sessioni di accesso.
 - **Isolamento della cache:** I percorsi browser e Spotify targettizzano esclusivamente `~/Library/Caches/`, lasciando invariata `~/Library/Application Support/`.
 - **Dry-Run per verificare tutto prima:** Puoi sempre visualizzare esattamente ogni singolo file e byte prima di eliminarlo con il tasto `d` o il flag `--dry-run`.
+
+---
+
+## 🛠️ Sviluppo, Gestione Dipendenze con `uv` e Test
+
+Il progetto adotta **`uv`** come package manager veloce e moderno per Python.
+
+### Installazione e Sincronizzazione Dipendenze
+```bash
+uv sync
+# oppure:
+make sync
+```
+
+### Esecuzione Test Automatici (33 Test)
+Per verificare che tutti i moduli di pulizia, il parser simulatori, la deduplicazione estensioni e la TUI funzionino correttamente nel tempo:
+```bash
+uv run pytest
+# oppure con output dettagliato:
+make test
+```
+
+### Struttura del Progetto
+```text
+mac-optimizer/
+├── pyproject.toml              # Definizione progetto e dipendenze uv (textual, rich, pytest)
+├── uv.lock                     # Lockfile deterministico uv
+├── Makefile                    # Target make per tui, dry-run, test, sync, ecc.
+├── clean_mac.py                # Script di avvio compatibile CLI / TUI
+├── src/
+│   └── mac_optimizer/
+│       ├── models.py           # Dataclass ModuleDef, CleanResult, RiskLevel
+│       ├── utils.py            # Calcolo dimensioni, comandi shell sicuri, info disco
+│       ├── config.py           # Persistenza selezioni (~/.config/mac-optimizer/config.json)
+│       ├── registry.py         # Registro e categorie dei 22 moduli
+│       ├── cli.py              # Runner riga di comando e tabelle Rich
+│       ├── modules/            # Moduli indipendenti per ciascuna categoria
+│       │   ├── xcode.py        # DerivedData, Archives (tutti), DeviceSupport, Cache IDE
+│       │   ├── simulators.py   # Rilevamento runtime simctl, eliminazione obsoleti, keep newest
+│       │   ├── package_managers.py # Homebrew, SPM, CocoaPods, NPM, Gradle, Pip/UV, Flutter
+│       │   ├── developer_tools.py  # VS Code estensioni duplicate, Docker prune
+│       │   ├── apps.py         # Spotify cache, Browser cache (Brave, Chrome, Safari)
+│       │   └── system.py       # Cestino, Log, Snapshots APFS, Demoni Java, Purge RAM
+│       └── tui/
+│           ├── app.py          # Applicazione Terminal UI moderna basata su Textual
+│           └── screens.py      # Schermata di esecuzione live e streaming risultati
+└── tests/                      # Suite di test unitari e headless TUI (pytest)
+    ├── test_utils.py
+    ├── test_config.py
+    ├── test_registry.py
+    ├── test_modules_xcode.py
+    ├── test_modules_simulators.py
+    ├── test_modules_package_managers.py
+    ├── test_modules_developer_tools.py
+    ├── test_modules_apps.py
+    ├── test_modules_system.py
+    ├── test_tui.py
+    └── test_cli.py
+```
