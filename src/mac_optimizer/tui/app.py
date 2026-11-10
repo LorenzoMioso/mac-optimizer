@@ -10,6 +10,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Vertical, Horizontal, Container
 from textual.widgets import Header, Footer, OptionList, Static, Label
 from textual.widgets.option_list import Option
+from textual.binding import Binding
 from rich.text import Text
 
 from mac_optimizer.models import ModuleDef
@@ -26,13 +27,13 @@ class MacOptimizerApp(App):
     theme = "tokyo-night"
 
     BINDINGS = [
-        ("space", "toggle_selection", "Attiva/Disattiva (Spazio)"),
-        ("d", "toggle_dry_run", "Dry-Run (d)"),
-        ("a", "select_all", "Seleziona Tutti (a)"),
-        ("n", "select_none", "Deseleziona Tutti (n)"),
-        ("s", "rescan", "Riscansiona (s)"),
-        ("enter", "run_cleaning", "Esegui Pulizia (Invio)"),
-        ("q", "quit", "Esci (q)"),
+        Binding("space", "toggle_selection", "Attiva/Disattiva (Spazio)", priority=True),
+        Binding("enter", "run_cleaning", "Esegui Pulizia (Invio)", priority=True),
+        Binding("d", "toggle_dry_run", "Dry-Run (d)", priority=True),
+        Binding("a", "select_all", "Seleziona Tutti (a)", priority=True),
+        Binding("n", "select_none", "Deseleziona Tutti (n)", priority=True),
+        Binding("s", "rescan", "Riscansiona (s)", priority=True),
+        Binding("q", "quit", "Esci (q)", priority=True),
     ]
 
     DEFAULT_CSS = """
@@ -216,22 +217,34 @@ class MacOptimizerApp(App):
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         """Supporta anche il click con il mouse per commutare la selezione."""
         if event.option_id and not event.option_id.startswith("cat_") and event.option_id in self.modules_by_id:
-            self.action_toggle_selection()
+            self.action_toggle_selection(target_id=event.option_id)
 
-    def action_toggle_selection(self) -> None:
-        """Commuta la selezione del modulo attualmente evidenziato."""
+    def action_toggle_selection(self, target_id: Optional[str] = None) -> None:
+        """Commuta la selezione del modulo evidenziato o cliccato."""
         ol = self.query_one(OptionList)
-        idx = ol.highlighted
-        if idx is None:
-            return
-        opt = ol.get_option_at_index(idx)
-        if not opt.id or opt.id.startswith("cat_") or opt.disabled:
-            return
-        if opt.id in self.modules_by_id:
-            m = self.modules_by_id[opt.id]
+        if target_id and target_id in self.modules_by_id:
+            mod_id = target_id
+            try:
+                idx = ol.get_option_index(mod_id)
+            except Exception:
+                idx = ol.highlighted
+        else:
+            idx = ol.highlighted
+            if idx is None:
+                return
+            opt = ol.get_option_at_index(idx)
+            if not opt.id or opt.id.startswith("cat_") or opt.disabled:
+                return
+            mod_id = opt.id
+
+        if mod_id in self.modules_by_id:
+            m = self.modules_by_id[mod_id]
             m.selected = not m.selected
             new_prompt = self._build_option_prompt(m)
-            ol.replace_option_prompt_at_index(idx, new_prompt)
+            if idx is not None:
+                ol.replace_option_prompt_at_index(idx, new_prompt)
+            else:
+                ol.replace_option_prompt(mod_id, new_prompt)
             save_module_selections(self.modules, self.dry_run)
             self._refresh_stats()
 
