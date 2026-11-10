@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
 clean_mac.py - Utility avanzata di pulizia, manutenzione e ottimizzazione disco/RAM per macOS.
-Ottimizzato in particolare per Mac Apple Silicon (M1/M2/M3/M4) e ambienti di sviluppo:
+Ottimizzato per Mac Apple Silicon (M1/M2/M3/M4 & Intel) e ambienti di sviluppo:
 iOS, Xcode, Flutter, Android, Node/NPM, Docker, Homebrew, VS Code, Browser e Cache di Sistema.
 
-Include una Terminal UI (TUI) interattiva per selezionare le opzioni con tastiera,
-calcolo parallelo dello spazio occupato in tempo reale e modalità CLI per script/automazione.
+Include una Terminal UI (TUI) interattiva con checkmark, navigazione con frecce,
+selezione salvata per le esecuzioni successive, divisione in categorie e supporto Dry-Run.
 """
 
 import os
@@ -18,11 +18,46 @@ import re
 import time
 import threading
 import concurrent.futures
-from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional, Callable
+import select
+import termios
+import tty
+from datetime import datetime
+from typing import Dict, List, Tuple, Optional, Callable, Any
 
 # ==============================================================================
-# COLORI E FORMATTAZIONE TERMINALE (CLI)
+# CONFIGURAZIONE E PERSISTENZA SELEZIONI
+# ==============================================================================
+
+CONFIG_DIR = os.path.expanduser("~/.config/mac-optimizer")
+CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+
+def load_config() -> Dict[str, Any]:
+    """Carica la configurazione salvata (selezioni e preferenze)."""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_config(selected_modules: Dict[str, bool], dry_run: bool):
+    """Salva le selezioni dell'utente per le sessioni successive."""
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        data = {
+            "selected_modules": selected_modules,
+            "dry_run": dry_run,
+            "last_updated": datetime.now().isoformat()
+        }
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
+# ==============================================================================
+# COLORI E FORMATTAZIONE ANSI
 # ==============================================================================
 
 class Colors:
@@ -35,6 +70,39 @@ class Colors:
     BOLD = '\033[1m'
     DIM = '\033[2m'
     RESET = '\033[0m'
+    REVERSE = '\033[7m'
+
+ANSI_REGEX = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
+
+def visible_len(text: str) -> int:
+    """Calcola la lunghezza visibile di una stringa escludendo i codici ANSI."""
+    return len(ANSI_REGEX.sub('', text))
+
+def fit_line(text: str, max_width: int) -> str:
+    """Tronca una stringa con codici ANSI in modo che non superi la larghezza del terminale."""
+    vlen = visible_len(text)
+    if vlen <= max_width:
+        return text
+    # Se supera, tronca rimuovendo caratteri visibili in eccesso
+    chars = []
+    curr_vlen = 0
+    in_ansi = False
+    for ch in text:
+        if ch == '\x1b':
+            in_ansi = True
+            chars.append(ch)
+        elif in_ansi:
+            chars.append(ch)
+            if ch.isalpha():
+                in_ansi = False
+        else:
+            if curr_vlen < max_width - 1:
+                chars.append(ch)
+                curr_vlen += 1
+            else:
+                break
+    chars.append(Colors.RESET)
+    return "".join(chars)
 
 def colorize(text: str, color: str) -> str:
     if sys.stdout.isatty():
@@ -97,7 +165,6 @@ def fast_get_path_size(path: str, timeout: int = 15) -> int:
     except Exception:
         pass
 
-    # Fallback su iterazione limitata in caso di fallimento o timeout
     total = 0
     try:
         for root, _, files in os.walk(expanded, followlinks=False):
@@ -219,21 +286,11 @@ def clean_xcode_deriveddata(dry_run: bool) -> CleanResult:
     return result
 
 
-def parse_semver(ver_str: str) -> Tuple:
-    clean = re.split(r'[-+]', ver_str)[0]
-    parts = []
-    for p in clean.split('.'):
-        try:
-            parts.append(int(p))
-        except ValueError:
-            parts.append(p)
-    return tuple(parts)
-
-def scan_xcode_archives(keep_days: int = 30) -> int:
+def scan_xcode_archives() -> int:
+    """Calcola lo spazio di TUTTI gli archivi Xcode (.xcarchive) senza filtri storici."""
     p = os.path.expanduser("~/Library/Developer/Xcode/Archives")
     if not os.path.isdir(p):
         return 0
-    cutoff = datetime.now() - timedelta(days=keep_days)
     total = 0
     try:
         for date_f in os.listdir(p):
@@ -244,22 +301,21 @@ def scan_xcode_archives(keep_days: int = 30) -> int:
                 if item.endswith(".xcarchive"):
                     arch_p = os.path.join(date_p, item)
                     try:
-                        mtime = datetime.fromtimestamp(os.path.getmtime(arch_p))
-                        if mtime < cutoff:
-                            total += fast_get_path_size(arch_p, timeout=5)
+                        total += fast_get_path_size(arch_p, timeout=5)
                     except OSError:
                         pass
     except OSError:
         pass
     return total
 
-def clean_xcode_archives(dry_run: bool, keep_days: int = 30) -> CleanResult:
-    result = CleanResult(f"Xcode Archives (> {keep_days} giorni)")
+def clean_xcode_archives(dry_run: bool) -> CleanResult:
+    """Rimuove TUTTI gli archivi Xcode (.xcarchive) liberando l'intero spazio occupato."""
+    result = CleanResult("Xcode Archives (Tutti gli archivi)")
     p = os.path.expanduser("~/Library/Developer/Xcode/Archives")
     if not os.path.isdir(p):
         result.add_detail("Nessuna cartella Archives trovata.")
         return result
-    cutoff = datetime.now() - timedelta(days=keep_days)
+
     archives_to_delete = []
     total_bytes = 0
     try:
@@ -271,11 +327,10 @@ def clean_xcode_archives(dry_run: bool, keep_days: int = 30) -> CleanResult:
                 if item.endswith(".xcarchive"):
                     arch_p = os.path.join(date_p, item)
                     try:
+                        sz = fast_get_path_size(arch_p, timeout=5)
                         mtime = datetime.fromtimestamp(os.path.getmtime(arch_p))
-                        if mtime < cutoff:
-                            sz = fast_get_path_size(arch_p, timeout=5)
-                            total_bytes += sz
-                            archives_to_delete.append((arch_p, item, mtime, sz))
+                        total_bytes += sz
+                        archives_to_delete.append((arch_p, item, mtime, sz))
                     except OSError:
                         pass
     except OSError:
@@ -284,15 +339,15 @@ def clean_xcode_archives(dry_run: bool, keep_days: int = 30) -> CleanResult:
     result.freed_bytes = total_bytes
     result.items_count = len(archives_to_delete)
     if not archives_to_delete:
-        result.add_detail(f"Nessun archivio Xcode più vecchio di {keep_days} giorni trovato.")
+        result.add_detail("Nessun archivio Xcode (.xcarchive) presente.")
         return result
 
-    result.add_detail(f"Trovati {len(archives_to_delete)} archivi datati ({format_bytes(total_bytes)}).")
-    for path, name, mtime, sz in archives_to_delete[:3]:
+    result.add_detail(f"Trovati {len(archives_to_delete)} archivi totali ({format_bytes(total_bytes)}).")
+    for path, name, mtime, sz in archives_to_delete[:4]:
         tag = "[Simulazione] Da eliminare:" if dry_run else "Eliminato:"
         result.add_detail(f"  {tag} {name} [{mtime.strftime('%Y-%m-%d')}] ({format_bytes(sz)})")
-    if len(archives_to_delete) > 3:
-        result.add_detail(f"  ... e altri {len(archives_to_delete) - 3} archivi.")
+    if len(archives_to_delete) > 4:
+        result.add_detail(f"  ... e altri {len(archives_to_delete) - 4} archivi.")
 
     if not dry_run:
         for path, _, _, _ in archives_to_delete:
@@ -301,6 +356,7 @@ def clean_xcode_archives(dry_run: bool, keep_days: int = 30) -> CleanResult:
             dp = os.path.join(p, date_f)
             if os.path.isdir(dp) and not os.listdir(dp):
                 shutil.rmtree(dp, ignore_errors=True)
+        result.add_detail(f"Tutti gli archivi eliminati con successo ({format_bytes(total_bytes)}).")
     return result
 
 
@@ -560,6 +616,16 @@ def clean_flutter_pub_cache(dry_run: bool) -> CleanResult:
 
 # --- 3. EDITOR & DOCKER ---
 
+def parse_semver(ver_str: str) -> Tuple:
+    clean = re.split(r'[-+]', ver_str)[0]
+    parts = []
+    for p in clean.split('.'):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            parts.append(p)
+    return tuple(parts)
+
 def scan_vscode_extensions() -> int:
     ext_dir = os.path.expanduser("~/.vscode/extensions")
     if not os.path.isdir(ext_dir):
@@ -603,7 +669,7 @@ def scan_vscode_extensions() -> int:
     return total
 
 def clean_vscode_extensions(dry_run: bool) -> CleanResult:
-    result = CleanResult("VS Code: Versioni Obsolete Estensioni")
+    result = CleanResult("VS Code: Estensioni Obsolete")
     ext_dir = os.path.expanduser("~/.vscode/extensions")
     if not os.path.isdir(ext_dir):
         result.add_detail("Directory estensioni VS Code non presente.")
@@ -678,7 +744,7 @@ def scan_docker() -> int:
     code, _, _ = run_cmd(["docker", "info"], timeout=3)
     if code != 0:
         return 0
-    return 1  # Valore simbolico per indicare che il demone è attivo
+    return 1
 
 def clean_docker(dry_run: bool) -> CleanResult:
     result = CleanResult("Docker System Prune")
@@ -808,7 +874,7 @@ def scan_snapshots() -> int:
     code, out, _ = run_cmd(["tmutil", "listlocalsnapshots", "/"], timeout=3)
     if code == 0:
         lines = [l.strip() for l in out.splitlines() if l.strip().startswith("com.apple.TimeMachine")]
-        return len(lines) * 1024 * 1024 * 1024  # Stima 1 GB per snapshot se presenti
+        return len(lines) * 1024 * 1024 * 1024
     return 0
 
 def clean_snapshots(dry_run: bool) -> CleanResult:
@@ -823,7 +889,7 @@ def clean_snapshots(dry_run: bool) -> CleanResult:
 
     result.add_detail(f"Rilevati {len(snaps)} snapshot APFS locali.")
     if dry_run:
-        result.add_detail(f"[Simulazione] Esecuzione di tmutil thinlocalsnapshots per liberare spazio su disco.")
+        result.add_detail("[Simulazione] Esecuzione di tmutil thinlocalsnapshots per liberare spazio su disco.")
     else:
         run_cmd(["tmutil", "thinlocalsnapshots", "/", "10000000000", "4"])
         result.add_detail("Snapshot locali assottigliati con successo.")
@@ -890,6 +956,7 @@ def clean_simulators_erase_all(dry_run: bool) -> CleanResult:
 # ==============================================================================
 
 def create_all_modules() -> List[ModuleDef]:
+    """Crea e registra tutti i moduli di pulizia disponibili."""
     return [
         # --- 🍎 Sviluppo iOS & macOS ---
         ModuleDef(
@@ -904,9 +971,9 @@ def create_all_modules() -> List[ModuleDef]:
         ),
         ModuleDef(
             mod_id="archives",
-            name="Xcode Archives (> 30 giorni)",
+            name="Xcode Archives (TUTTI gli archivi)",
             category="🍎 Sviluppo iOS & macOS",
-            description="Vecchi archivi di release .xcarchive datati.",
+            description="Elimina tutti gli archivi .xcarchive generati in passato.",
             default_selected=True,
             risk_level="safe",
             scan_func=scan_xcode_archives,
@@ -924,7 +991,7 @@ def create_all_modules() -> List[ModuleDef]:
         ),
         ModuleDef(
             mod_id="xcode_cache",
-            name="Xcode IDE Caches & Docs",
+            name="Xcode IDE Caches & Documentazione",
             category="🍎 Sviluppo iOS & macOS",
             description="Cache interna di compilazione/indicizzazione Xcode e documentazione.",
             default_selected=True,
@@ -953,11 +1020,11 @@ def create_all_modules() -> List[ModuleDef]:
             clean_func=clean_swiftpm_cache
         ),
 
-        # --- 📦 Package Manager & SDK ---
+        # --- 📦 Package Managers & SDK ---
         ModuleDef(
             mod_id="brew",
             name="Homebrew Cache & Bottles",
-            category="📦 Package Manager & SDK",
+            category="📦 Package Managers & SDK",
             description="Download vecchi pacchetti e formule con brew cleanup --prune=all.",
             default_selected=True,
             risk_level="safe",
@@ -967,7 +1034,7 @@ def create_all_modules() -> List[ModuleDef]:
         ModuleDef(
             mod_id="cocoapods",
             name="CocoaPods Cache",
-            category="📦 Package Manager & SDK",
+            category="📦 Package Managers & SDK",
             description="Cache locale archivio pod (~/Library/Caches/CocoaPods).",
             default_selected=True,
             risk_level="safe",
@@ -976,8 +1043,8 @@ def create_all_modules() -> List[ModuleDef]:
         ),
         ModuleDef(
             mod_id="npm",
-            name="Node / NPM / Yarn / PNPM",
-            category="📦 Package Manager & SDK",
+            name="Node / NPM / Yarn / PNPM Caches",
+            category="📦 Package Managers & SDK",
             description="Cache pacchetti JavaScript (~/.npm, ~/.yarn/cache, ~/.pnpm-store).",
             default_selected=True,
             risk_level="safe",
@@ -987,7 +1054,7 @@ def create_all_modules() -> List[ModuleDef]:
         ModuleDef(
             mod_id="gradle",
             name="Gradle & Android Build Caches",
-            category="📦 Package Manager & SDK",
+            category="📦 Package Managers & SDK",
             description="Cache di compilazione Gradle e Android (~/.gradle/caches, ~/.android/cache).",
             default_selected=True,
             risk_level="safe",
@@ -997,7 +1064,7 @@ def create_all_modules() -> List[ModuleDef]:
         ModuleDef(
             mod_id="pip",
             name="Python / Pip / UV Cache",
-            category="📦 Package Manager & SDK",
+            category="📦 Package Managers & SDK",
             description="Cache ruote (.whl) e download pacchetti Python (~/Library/Caches/pip).",
             default_selected=True,
             risk_level="safe",
@@ -1007,19 +1074,19 @@ def create_all_modules() -> List[ModuleDef]:
         ModuleDef(
             mod_id="flutter",
             name="Flutter & Dart Pub Git Cache",
-            category="📦 Package Manager & SDK",
+            category="📦 Package Managers & SDK",
             description="Cache repository git clonati in ~/.pub-cache/git.",
-            default_selected=False,
+            default_selected=True,
             risk_level="safe",
             scan_func=scan_flutter_pub_cache,
             clean_func=clean_flutter_pub_cache
         ),
 
-        # --- 💻 Editor & Docker ---
+        # --- 💻 Editor & Strumenti ---
         ModuleDef(
             mod_id="vscode",
             name="VS Code: Estensioni Obsolete",
-            category="💻 Editor & Docker",
+            category="💻 Editor & Strumenti",
             description="Rimuove versioni precedenti duplicate in ~/.vscode/extensions.",
             default_selected=True,
             risk_level="safe",
@@ -1029,7 +1096,7 @@ def create_all_modules() -> List[ModuleDef]:
         ModuleDef(
             mod_id="docker",
             name="Docker System Prune",
-            category="💻 Editor & Docker",
+            category="💻 Editor & Strumenti",
             description="Container fermi, immagini orfane, volumi non associati e build cache.",
             default_selected=False,
             risk_level="caution",
@@ -1050,9 +1117,9 @@ def create_all_modules() -> List[ModuleDef]:
         ),
         ModuleDef(
             mod_id="browser",
-            name="Browser Web Caches",
+            name="Browser Web Caches (Brave, Chrome, Safari)",
             category="🌐 Cache App & Browser",
-            description="Cache web temporanea di Brave, Chrome e Safari (nessun cookie/password toccato).",
+            description="Cache web temporanea dei browser (nessun cookie/password toccato).",
             default_selected=True,
             risk_level="safe",
             scan_func=scan_browser_cache,
@@ -1072,7 +1139,7 @@ def create_all_modules() -> List[ModuleDef]:
         ),
         ModuleDef(
             mod_id="logs",
-            name="Log Utente & DiagnosticReports",
+            name="Log Utente & Crash Reports",
             category="⚙️ Sistema macOS & RAM",
             description="File di log applicativi e crash dump accumulati in ~/Library/Logs.",
             default_selected=True,
@@ -1102,7 +1169,7 @@ def create_all_modules() -> List[ModuleDef]:
         ),
         ModuleDef(
             mod_id="ram_purge",
-            name="macOS Purge RAM",
+            name="macOS Purge RAM (svuota cache inattiva)",
             category="⚙️ Sistema macOS & RAM",
             description="Svuota la cache disco inattiva di macOS per restituire RAM fisica al sistema.",
             default_selected=True,
@@ -1111,10 +1178,10 @@ def create_all_modules() -> List[ModuleDef]:
             clean_func=clean_ram_purge
         ),
 
-        # --- ⚠️ Operazioni Avanzate ---
+        # --- ⚠️ Operazioni Avanzate (Opt-in) ---
         ModuleDef(
             mod_id="simulators_erase",
-            name="Reset Totale Simulatori iOS",
+            name="Reset Totale Simulatori iOS (Opt-in)",
             category="⚠️ Operazioni Avanzate (Opt-in)",
             description="xcrun simctl erase all: azzera tutte le app e dati installati nei simulatori.",
             default_selected=False,
@@ -1125,11 +1192,17 @@ def create_all_modules() -> List[ModuleDef]:
     ]
 
 
-# ==============================================================================
-# TERMINAL UI (TUI) CON CURSES
-# ==============================================================================
+def apply_saved_config_to_modules(modules: List[ModuleDef], saved_config: Dict[str, Any]):
+    """Applica le selezioni salvate in precedenza; se nuova, usa default."""
+    saved_selections = saved_config.get("selected_modules", {})
+    for m in modules:
+        if m.id in saved_selections:
+            m.selected = bool(saved_selections[m.id])
 
-import curses
+
+# ==============================================================================
+# SCANSIONE IN PARALLELO
+# ==============================================================================
 
 def start_background_scanner(modules: List[ModuleDef]):
     """Scansiona le dimensioni dei moduli in parallelo in background."""
@@ -1151,226 +1224,252 @@ def start_background_scanner(modules: List[ModuleDef]):
     t.start()
 
 
-def run_tui(modules: List[ModuleDef], dry_run_default: bool = False) -> Tuple[bool, bool, List[ModuleDef]]:
+# ==============================================================================
+# TERMINAL UI INTERATTIVA (IN-PLACE ANSI & RAWMONITOR)
+# ==============================================================================
+
+def read_key(timeout: float = 0.08) -> Optional[str]:
+    """Legge un singolo tasto o sequenza di escape (frecce) da stdin in modo non bloccante."""
+    r, _, _ = select.select([sys.stdin], [], [], timeout)
+    if not r:
+        return None
+    ch = sys.stdin.read(1)
+    if ch == '\x1b':
+        # Possibile sequenza freccia
+        r2, _, _ = select.select([sys.stdin], [], [], 0.05)
+        if r2:
+            seq = sys.stdin.read(2)
+            if seq == '[A':
+                return 'UP'
+            elif seq == '[B':
+                return 'DOWN'
+            elif seq == '[C':
+                return 'RIGHT'
+            elif seq == '[D':
+                return 'LEFT'
+            elif seq == '[H':
+                return 'HOME'
+            elif seq == '[F':
+                return 'END'
+            return 'ESC'
+        return 'ESC'
+    elif ch in ('\r', '\n'):
+        return 'ENTER'
+    elif ch == ' ':
+        return 'SPACE'
+    elif ch in ('\x03',):  # Ctrl+C
+        raise KeyboardInterrupt
+    return ch
+
+
+def run_interactive_tui(modules: List[ModuleDef], dry_run_initial: bool = True) -> Tuple[bool, bool, List[ModuleDef]]:
     """
-    Esegue la TUI interattiva.
-    Restituisce: (confirmed: bool, dry_run: bool, modules_list)
+    Mostra la lista interattiva di attività di pulizia direttamente nel terminale.
+    - Arrow keys (↑ / ↓) per scorrere
+    - Barra spaziatrice per attivare / disattivare
+    - Divisione in categorie
+    - Selezione salvata automaticamente
+    - Sliding window viewport per terminali di qualsiasi altezza
     """
     start_background_scanner(modules)
+    disk_info = get_disk_usage_info()
 
-    # Stato locale TUI
-    state = {
-        "cursor": 0,
-        "offset": 0,
-        "dry_run": dry_run_default,
-        "confirmed": False,
-        "quit": False
-    }
+    # Prepara lista elementi (categorie + moduli)
+    display_items: List[Dict[str, Any]] = []
+    selectable_indices: List[int] = []
+    curr_cat = None
+    for m in modules:
+        if m.category != curr_cat:
+            curr_cat = m.category
+            display_items.append({"type": "category", "label": curr_cat})
+        idx = len(display_items)
+        display_items.append({"type": "module", "module": m})
+        selectable_indices.append(idx)
 
-    def _tui_main(stdscr):
-        # Configurazione curses
-        curses.curs_set(0)
-        stdscr.timeout(100) # Rinfresca ogni 100ms per riflettere la scansione background
-        curses.use_default_colors()
+    cursor_idx = 0  # Indice all'interno di selectable_indices
+    offset = 0      # Offset di scorrimento nella display_items
+    dry_run = dry_run_initial
+    prev_rendered_lines = 0
 
-        # Inizializza coppie di colori se supportati
-        has_colors = curses.has_colors()
-        if has_colors:
-            curses.init_pair(1, curses.COLOR_CYAN, -1)     # Titoli / Evidenziazioni
-            curses.init_pair(2, curses.COLOR_GREEN, -1)    # Successo / Sicuro
-            curses.init_pair(3, curses.COLOR_YELLOW, -1)   # Avviso / Dry-run
-            curses.init_pair(4, curses.COLOR_RED, -1)      # Attenzione / Pericolo
-            curses.init_pair(5, curses.COLOR_BLACK, curses.COLOR_CYAN) # Cursore riga attiva
-            curses.init_pair(6, curses.COLOR_MAGENTA, -1)  # Categorie
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
 
-        disk_info = get_disk_usage_info()
+    def persist_current_state():
+        selections = {m.id: m.selected for m in modules}
+        save_config(selections, dry_run)
+
+    try:
+        tty.setcbreak(fd)
+        sys.stdout.write("\033[?25l")  # Nascondi cursore
+        sys.stdout.flush()
 
         while True:
-            max_y, max_x = stdscr.getmaxyx()
-            stdscr.erase()
+            # Dimensioni terminale
+            term_cols, term_lines = shutil.get_terminal_size((80, 24))
+            term_cols = max(40, term_cols)
+            term_lines = max(14, term_lines)
 
-            if max_y < 16 or max_x < 65:
-                msg = "Allarga la finestra del terminale (min 65x16)"
-                stdscr.addstr(max_y // 2, max(0, (max_x - len(msg)) // 2), msg, curses.A_BOLD)
-                key = stdscr.getch()
-                if key in [ord('q'), ord('Q'), 27]:
-                    state["quit"] = True
-                    break
-                continue
+            # Posizione attiva nella lista display
+            active_disp_idx = selectable_indices[cursor_idx]
+            active_module = display_items[active_disp_idx]["module"]
 
-            # --- 1. HEADER ---
-            title = " 🧹 Mac Developer Cleaner & Optimizer "
-            stdscr.addstr(0, 0, "=" * (max_x - 1), curses.A_DIM)
-            stdscr.addstr(1, 2, title, curses.color_pair(1) | curses.A_BOLD if has_colors else curses.A_BOLD)
+            # Calcolo viewport
+            header_lines_count = 5
+            footer_lines_count = 5
+            viewport_size = max(4, term_lines - (header_lines_count + footer_lines_count))
 
-            # Modalità Dry-Run / Reale
-            mode_badge = "[ SIMULAZIONE (DRY-RUN) ]" if state["dry_run"] else "[ ESECUZIONE REALE ]"
-            mode_color = curses.color_pair(3) if state["dry_run"] else curses.color_pair(2)
-            if max_x > 60:
-                stdscr.addstr(1, max(30, max_x - len(mode_badge) - 3), mode_badge, mode_color | curses.A_BOLD if has_colors else curses.A_BOLD)
+            # Aggiusta scorrimento offset
+            if active_disp_idx < offset:
+                offset = active_disp_idx
+            elif active_disp_idx >= offset + viewport_size:
+                offset = active_disp_idx - viewport_size + 1
+            offset = max(0, min(offset, len(display_items) - viewport_size))
 
-            # Barra disco
-            disk_str = f"Disco: {disk_info['free']} liberi su {disk_info['total']} ({disk_info['percent']} usato)"
-            stdscr.addstr(2, 2, disk_str, curses.A_DIM)
-            stdscr.addstr(3, 0, "-" * (max_x - 1), curses.A_DIM)
+            visible_slice = display_items[offset : offset + viewport_size]
 
-            # --- 2. LISTA SCROLLABILE DEI MODULI ---
-            header_lines = 4
-            footer_lines = 5
-            available_rows = max_y - header_lines - footer_lines
+            # Costruisci righe da stampare
+            lines: List[str] = []
 
-            # Mappa degli elementi (tenendo traccia di categorie e indici modulo)
-            display_items = []
-            curr_cat = None
-            for idx, m in enumerate(modules):
-                if m.category != curr_cat:
-                    curr_cat = m.category
-                    display_items.append({"type": "category", "label": curr_cat})
-                display_items.append({"type": "module", "index": idx, "module": m})
+            # 1. HEADER
+            title_text = f" 🧹 Mac Developer Optimizer & Cleaner "
+            mode_badge = f"{Colors.YELLOW}[✔] 🔍 DRY-RUN (Simulazione){Colors.RESET}" if dry_run else f"{Colors.GREEN}[ ] ⚡ ESECUZIONE REALE{Colors.RESET}"
+            disk_line = f"Disco: {Colors.BOLD}{disk_info['free']}{Colors.RESET} liberi su {disk_info['total']} ({disk_info['percent']} usato)  |  Modalità: {mode_badge}"
+            lines.append(colorize("=" * (term_cols - 1), Colors.BOLD))
+            lines.append(f"{Colors.HEADER}{Colors.BOLD}{title_text}{Colors.RESET}")
+            lines.append(disk_line)
+            lines.append(colorize("-" * (term_cols - 1), Colors.DIM))
+            lines.append(f"{Colors.DIM}  (Usa [↑/↓] per muoverti, [Spazio] per abilitare/disabilitare, [d] Dry-run, [Invio] Avvia){Colors.RESET}")
 
-            # Trova l'elemento selezionato nella display list
-            selected_display_idx = 0
-            for d_idx, d_item in enumerate(display_items):
-                if d_item["type"] == "module" and d_item["index"] == state["cursor"]:
-                    selected_display_idx = d_idx
-                    break
+            # 2. INDICATORE SOPRA
+            if offset > 0:
+                lines.append(f"{Colors.DIM}  ▲ ... ({offset} voci sopra) ...{Colors.RESET}")
+            else:
+                lines.append("")
 
-            # Aggiusta lo scorrimento
-            if selected_display_idx < state["offset"]:
-                state["offset"] = selected_display_idx
-            elif selected_display_idx >= state["offset"] + available_rows:
-                state["offset"] = selected_display_idx - available_rows + 1
-
-            # Renderizza righe visibili
-            for row in range(available_rows):
-                item_idx = state["offset"] + row
-                if item_idx >= len(display_items):
-                    break
-                d_item = display_items[item_idx]
-                y_pos = header_lines + row
-
-                if d_item["type"] == "category":
-                    cat_title = f"-- {d_item['label']} --"
-                    stdscr.addstr(y_pos, 2, cat_title[:max_x-4], curses.color_pair(6) | curses.A_BOLD if has_colors else curses.A_BOLD)
+            # 3. LISTA ELEMENTI
+            for item in visible_slice:
+                if item["type"] == "category":
+                    cat_str = f"  {Colors.BOLD}{Colors.HEADER}▸ {item['label']}{Colors.RESET}"
+                    lines.append(fit_line(cat_str, term_cols))
                 else:
-                    m = d_item["module"]
-                    is_active = (d_item["index"] == state["cursor"])
-                    chk = "[X]" if m.selected else "[ ]"
+                    m = item["module"]
+                    is_active = (m == active_module)
 
-                    # Formattazione dimensione
-                    if m.scan_done:
-                        if m.estimated_bytes > 0:
-                            sz_str = f"{format_bytes(m.estimated_bytes):>9}"
-                        else:
-                            sz_str = f"{'0 B':>9}"
+                    # Simbolo Checkmark
+                    if m.selected:
+                        chk_str = f"{Colors.GREEN}{Colors.BOLD}[✔]{Colors.RESET}"
                     else:
-                        sz_str = " (calcolo)"
+                        chk_str = f"{Colors.DIM}[ ]{Colors.RESET}"
+
+                    # Dimensione
+                    if m.scan_done:
+                        sz_str = f"{format_bytes(m.estimated_bytes):>9}"
+                    else:
+                        sz_str = f"{Colors.DIM}(in calcolo){Colors.RESET}"
 
                     # Badge rischio
                     if m.risk_level == "caution":
-                        risk_str = "[Attenzione]"
-                        risk_col = curses.color_pair(4)
+                        risk_str = f"{Colors.YELLOW}[Attenzione]{Colors.RESET}"
                     elif m.risk_level == "recommended":
-                        risk_str = "[Consigliato]"
-                        risk_col = curses.color_pair(1)
+                        risk_str = f"{Colors.CYAN}[Consigliato]{Colors.RESET}"
                     else:
-                        risk_str = "[Sicuro]"
-                        risk_col = curses.color_pair(2)
+                        risk_str = f"{Colors.GREEN}[Sicuro]{Colors.RESET}"
 
-                    name_width = max(18, max_x - 38)
-                    truncated_name = m.name[:name_width].ljust(name_width)
-                    line_str = f" {chk} {truncated_name}  {sz_str}  {risk_str}"
+                    name_w = max(18, term_cols - 40)
+                    t_name = m.name[:name_w].ljust(name_w)
 
                     if is_active:
-                        attr = curses.color_pair(5) | curses.A_BOLD if has_colors else curses.A_REVERSE
-                        stdscr.addstr(y_pos, 1, line_str[:max_x-2].ljust(max_x - 2), attr)
+                        prefix = f"{Colors.CYAN}{Colors.BOLD}❯{Colors.RESET}"
+                        line_content = f"{prefix} {chk_str} {Colors.BOLD}{t_name}{Colors.RESET}  {sz_str}  {risk_str}"
                     else:
-                        chk_attr = curses.color_pair(2) | curses.A_BOLD if (has_colors and m.selected) else curses.A_NORMAL
-                        stdscr.addstr(y_pos, 1, f" {chk}", chk_attr)
-                        stdscr.addstr(y_pos, 6, f"{truncated_name}  {sz_str}  ")
-                        stdscr.addstr(y_pos, 6 + len(truncated_name) + 2 + len(sz_str) + 2, risk_str, risk_col if has_colors else curses.A_NORMAL)
+                        prefix = " "
+                        line_content = f"{prefix} {chk_str} {t_name}  {sz_str}  {risk_str}"
 
-            # --- 3. FOOTER (DESCRIZIONE, RIEPILOGO, CONTROLLI) ---
-            sep_y = max_y - footer_lines
-            stdscr.addstr(sep_y, 0, "-" * (max_x - 1), curses.A_DIM)
+                    lines.append(fit_line(line_content, term_cols))
 
-            # Descrizione modulo attivo
-            active_mod = modules[state["cursor"]]
-            desc_str = f"ℹ️  {active_mod.description}"
-            stdscr.addstr(sep_y + 1, 2, desc_str[:max_x-4], curses.color_pair(1) if has_colors else curses.A_NORMAL)
+            # Riempi righe vuote se fine elenco per stabilizzare altezza
+            while len(visible_slice) < viewport_size:
+                lines.append("")
+                visible_slice.append({"type": "blank"})
 
-            # Totale stimato selezionato
+            # 4. INDICATORE SOTTO
+            remaining_below = len(display_items) - (offset + viewport_size)
+            if remaining_below > 0:
+                lines.append(f"{Colors.DIM}  ▼ ... ({remaining_below} voci sotto) ...{Colors.RESET}")
+            else:
+                lines.append("")
+
+            # 5. FOOTER
+            lines.append(colorize("-" * (term_cols - 1), Colors.DIM))
+            desc_text = f"ℹ️  {active_module.description}"
+            lines.append(fit_line(colorize(desc_text, Colors.CYAN), term_cols))
+
             sel_count = sum(1 for m in modules if m.selected)
             sel_bytes = sum(m.estimated_bytes for m in modules if m.selected)
-            stat_str = f"Selezionati: {sel_count}/{len(modules)}  |  Spazio stimato recuperabile: {format_bytes(sel_bytes)}"
-            stdscr.addstr(sep_y + 2, 2, stat_str[:max_x-4], curses.color_pair(2) | curses.A_BOLD if has_colors else curses.A_BOLD)
+            stat_text = f"Totale selezionato: {Colors.BOLD}{format_bytes(sel_bytes)}{Colors.RESET} ({sel_count}/{len(modules)} moduli attivi)"
+            lines.append(fit_line(stat_text, term_cols))
 
-            # Tasti funzione
-            keys_str = "[↑/↓] Naviga  [Spazio] Seleziona  [a] Tutti  [n] Nessuno  [d] Dry-run  [s] Riscansiona  [Invio] Esegui  [q] Esci"
-            stdscr.addstr(sep_y + 3, 2, keys_str[:max_x-4], curses.A_DIM)
+            help_keys = "[↑/↓] Naviga  [Spazio] Attiva/Disattiva  [a] Tutti  [n] Nessuno  [d] Dry-run  [Invio] Esegui  [q] Esci"
+            lines.append(fit_line(colorize(help_keys, Colors.DIM), term_cols))
 
-            # --- 4. GESTIONE INPUT ---
-            try:
-                ch = stdscr.getch()
-            except curses.error:
+            # --- RENDERING ANSI PULITO ED EFFICIENTE ---
+            if prev_rendered_lines > 0:
+                sys.stdout.write(f"\r\033[{prev_rendered_lines}A\033[0J")
+            output_chunk = "\n".join(lines) + "\n"
+            sys.stdout.write(output_chunk)
+            sys.stdout.flush()
+            prev_rendered_lines = len(lines)
+
+            # --- INPUT UTENTE ---
+            key = read_key(timeout=0.08)
+            if key is None:
                 continue
 
-            if ch == -1:
-                continue
-            elif ch in [ord('q'), ord('Q'), 27]: # q, Q o ESC
-                state["quit"] = True
-                break
-            elif ch in [curses.KEY_UP, ord('k'), ord('K')]:
-                state["cursor"] = max(0, state["cursor"] - 1)
-            elif ch in [curses.KEY_DOWN, ord('j'), ord('J')]:
-                state["cursor"] = min(len(modules) - 1, state["cursor"] + 1)
-            elif ch == ord(' '):
-                active_mod.selected = not active_mod.selected
-            elif ch in [ord('a'), ord('A')]:
+            if key in ('UP', 'k', 'K'):
+                cursor_idx = max(0, cursor_idx - 1)
+            elif key in ('DOWN', 'j', 'J'):
+                cursor_idx = min(len(selectable_indices) - 1, cursor_idx + 1)
+            elif key == 'SPACE':
+                active_module.selected = not active_module.selected
+                persist_current_state()
+            elif key in ('a', 'A'):
                 for m in modules:
                     if m.risk_level != "caution":
                         m.selected = True
-            elif ch in [ord('n'), ord('N')]:
+                persist_current_state()
+            elif key in ('n', 'N'):
                 for m in modules:
                     m.selected = False
-            elif ch in [ord('d'), ord('D')]:
-                state["dry_run"] = not state["dry_run"]
-            elif ch in [ord('s'), ord('S')]:
+                persist_current_state()
+            elif key in ('d', 'D'):
+                dry_run = not dry_run
+                persist_current_state()
+            elif key in ('s', 'S'):
                 for m in modules:
                     m.scan_done = False
                 start_background_scanner(modules)
-            elif ch in [10, 13, curses.KEY_ENTER]:
+            elif key in ('q', 'Q', 'ESC'):
+                persist_current_state()
+                return False, dry_run, modules
+            elif key == 'ENTER':
+                persist_current_state()
                 if sel_count == 0:
                     continue
-                # Schermata di conferma prima di procedere
-                mode_label = "SIMULAZIONE DRY-RUN (nessun file verrà cancellato)" if state["dry_run"] else "ELIMINAZIONE REALE (i file verranno rimossi)"
-                prompt = f"Avviare la pulizia di {sel_count} moduli in modalità {mode_label}? (s/N): "
-                stdscr.addstr(sep_y + 2, 0, " " * (max_x - 1))
-                stdscr.addstr(sep_y + 2, 2, prompt[:max_x-4], curses.color_pair(3) | curses.A_BOLD if has_colors else curses.A_BOLD)
-                stdscr.refresh()
-                curses.echo()
-                stdscr.timeout(-1)
-                ans = stdscr.getstr(sep_y + 2, min(len(prompt) + 2, max_x - 5), 4).decode('utf-8', errors='ignore').strip().lower()
-                curses.noecho()
-                stdscr.timeout(100)
-                if ans in ['s', 'si', 'sì', 'y', 'yes']:
-                    state["confirmed"] = True
-                    break
+                return True, dry_run, modules
 
-    try:
-        curses.wrapper(_tui_main)
-    except Exception as e:
-        print(f"Errore nell'avvio della TUI: {e}", file=sys.stderr)
-        return False, dry_run_default, modules
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        sys.stdout.write("\033[?25h")  # Ripristina cursore
+        sys.stdout.flush()
 
-    return state["confirmed"], state["dry_run"], modules
+    return False, dry_run, modules
 
 
 # ==============================================================================
 # MOTORE DI ESECUZIONE PULIZIA (CLI & POST-TUI)
 # ==============================================================================
 
-def execute_cleaning(selected_modules: List[ModuleDef], dry_run: bool, keep_archives_days: int = 30) -> List[CleanResult]:
+def execute_cleaning(selected_modules: List[ModuleDef], dry_run: bool) -> List[CleanResult]:
     """Esegue la sequenza di moduli selezionati e stampa l'output dettagliato."""
     results: List[CleanResult] = []
     total_reclaimed = 0
@@ -1387,10 +1486,7 @@ def execute_cleaning(selected_modules: List[ModuleDef], dry_run: bool, keep_arch
         prefix = f"[{idx}/{len(selected_modules)}]"
         print(colorize(f"▶ {prefix} {mod.name}...", Colors.BOLD))
         try:
-            if mod.id == "archives":
-                res = mod.clean_func(dry_run)
-            else:
-                res = mod.clean_func(dry_run)
+            res = mod.clean_func(dry_run)
         except Exception as e:
             res = CleanResult(mod.name)
             res.add_detail(f"Errore durante l'esecuzione del modulo: {e}")
@@ -1426,7 +1522,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Esempi di utilizzo:
-  ./clean_mac.py                     # Avvia la Terminal UI interattiva
+  ./clean_mac.py                     # Avvia la lista interattiva con checkmark (TUI)
   ./clean_mac.py --dry-run           # Esegue la simulazione in modalità CLI
   ./clean_mac.py --yes               # Esegue la pulizia automatica completa in CLI
   ./clean_mac.py --only deriveddata,brew,trash --dry-run
@@ -1451,7 +1547,7 @@ Esempi di utilizzo:
     parser.add_argument(
         "--cli",
         action="store_true",
-        help="Forza la modalità CLI (disabilita la TUI)."
+        help="Forza la modalità CLI senza interfaccia interattiva."
     )
     parser.add_argument(
         "--only",
@@ -1469,30 +1565,36 @@ Esempi di utilizzo:
         help="Elenca tutti i moduli di pulizia disponibili e termina."
     )
     parser.add_argument(
-        "--keep-archives-days",
-        type=int,
-        default=30,
-        help="Giorni di ritenzione per gli archivi Xcode (default: 30)."
-    )
-    parser.add_argument(
         "--purge-ram",
         action="store_true",
         help="Forza l'esecuzione del purge della cache RAM al termine."
     )
 
     args = parser.parse_args()
+
+    # Inizializza tutti i moduli e applica selezioni persistenti
     all_modules = create_all_modules()
-    modules_map = {m.id: m for m in all_modules}
+    saved_config = load_config()
+    apply_saved_config_to_modules(all_modules, saved_config)
+
+    # Determina stato iniziale dry-run (salvato o via flag)
+    saved_dry_run = saved_config.get("dry_run", True)
+    if args.dry_run:
+        initial_dry_run = True
+    elif args.yes:
+        initial_dry_run = False
+    else:
+        initial_dry_run = saved_dry_run
 
     # Comando --list
     if args.list:
         print("\n" + colorize("Moduli di Pulizia Disponibili:", Colors.BOLD + Colors.HEADER))
         print(colorize("-" * 75, Colors.DIM))
-        print(f"{'ID':<18} {'Rischio':<12} {'Default':<10} {'Nome & Descrizione'}")
+        print(f"{'ID':<18} {'Rischio':<12} {'Stato':<10} {'Nome & Descrizione'}")
         print(colorize("-" * 75, Colors.DIM))
         for m in all_modules:
-            def_str = "Attivo" if m.selected else "Disattivo"
-            print(f"{m.id:<18} {m.risk_level:<12} {def_str:<10} {colorize(m.name, Colors.BOLD)}")
+            stat_str = "Attivo [✔]" if m.selected else "Disattivo [ ]"
+            print(f"{m.id:<18} {m.risk_level:<12} {stat_str:<10} {colorize(m.name, Colors.BOLD)}")
             print(f"   ↳ {colorize(m.description, Colors.DIM)}")
         print()
         return
@@ -1508,18 +1610,18 @@ Esempi di utilizzo:
             if m.id in to_skip:
                 m.selected = False
 
-    # Decide se avviare TUI o CLI
+    # Modalità di esecuzione (TUI vs CLI)
     use_tui = False
     if args.tui:
         use_tui = True
-    elif args.cli or args.yes or args.dry_run or args.only or args.skip or not sys.stdin.isatty():
+    elif args.cli or args.yes or args.only or args.skip or not sys.stdin.isatty():
         use_tui = False
     else:
         # Default in terminale interattivo: avvia TUI!
         use_tui = True
 
     if use_tui:
-        confirmed, dry_run, configured_modules = run_tui(all_modules, dry_run_default=args.dry_run)
+        confirmed, dry_run, configured_modules = run_interactive_tui(all_modules, dry_run_initial=initial_dry_run)
         if not confirmed:
             print("\nOperazione annullata. Nessuna modifica apportata.")
             return
@@ -1527,17 +1629,16 @@ Esempi di utilizzo:
         if not selected:
             print("\nNessun modulo selezionato. Uscita.")
             return
-        execute_cleaning(selected, dry_run=dry_run, keep_archives_days=args.keep_archives_days)
+        execute_cleaning(selected, dry_run=dry_run)
     else:
-        # Modalità CLI
+        # Modalità CLI diretta
         selected = [m for m in all_modules if m.selected]
         if not selected:
             print(colorize("Nessun modulo selezionato per l'esecuzione.", Colors.YELLOW))
             return
 
-        dry_run = args.dry_run
+        dry_run = args.dry_run if args.dry_run else initial_dry_run
         if not dry_run and not args.yes:
-            # Chiedi conferma interattiva in CLI
             sel_ids = ", ".join([m.id for m in selected])
             print(f"\nModuli selezionati ({len(selected)}): {colorize(sel_ids, Colors.CYAN)}")
             ans = input("Confermi di voler procedere con l'eliminazione effettiva? [s/N]: ").strip().lower()
@@ -1545,7 +1646,7 @@ Esempi di utilizzo:
                 print("Operazione annullata.")
                 return
 
-        execute_cleaning(selected, dry_run=dry_run, keep_archives_days=args.keep_archives_days)
+        execute_cleaning(selected, dry_run=dry_run)
 
 
 if __name__ == "__main__":
