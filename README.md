@@ -16,9 +16,11 @@
    - **Selezione persistente:** le tue scelte vengono salvate automaticamente in `~/.config/mac-optimizer/config.json` e ricordate alle esecuzioni successive.
    - **Gestione viewport per elenchi lunghi:** supporta finestre di terminale di qualsiasi dimensione con scorrimento dinamico.
    - **Dry-Run integrato:** premi **`d`** per alternare in tempo reale tra simulazione sicura ed esecuzione effettiva.
-3. **Xcode Archives Completi:**  
+3. **Gestione Intelligente dei Simulatori iOS:**  
+   Rileva automaticamente tutti i runtime e i simulatori installati tramite `xcrun simctl`. Mantiene sempre intatta **l'ultima versione attiva** (es. iOS 27.0) ed elimina in sicurezza i runtime precedenti obsoleti (es. iOS 26.5) e i relativi simulatori virtuali associati, recuperando tipicamente **oltre 12 GB** di spazio SSD.
+4. **Xcode Archives Completi:**  
    Elimina **tutti** gli archivi `.xcarchive` accumulati senza mantenere versioni storiche, liberando subito fino a decine di gigabyte.
-4. **Guide di Ottimizzazione RAM di Sistema:**  
+5. **Guide di Ottimizzazione RAM di Sistema:**  
    - [`guida_simslim.md`](guida_simslim.md): Riduzione RAM del Simulatore iOS da **3.5 GB a < 900 MB**.  
    - [`guida_disabilitare_apple_intelligence.md`](guida_disabilitare_apple_intelligence.md): Recupero di **> 12 GB SSD** e **1.5 GB RAM** disattivando i modelli AI locali su macOS 15+.
 
@@ -40,7 +42,7 @@ Lanciando `./clean_mac.py` in un terminale, si avvia direttamente l'interfaccia 
   [✔] Xcode Archives (TUTTI gli archivi)              837.3 MB  [Sicuro]
   [✔] Xcode iOS DeviceSupport                              0 B  [Sicuro]
   [✔] Xcode IDE Caches & Documentazione                 3.1 MB  [Sicuro]
-  [✔] Simulatori iOS: Cache & Orfani                   36.1 MB  [Consigliato]
+  [✔] Vecchi Simulatori iOS (Mantiene solo iOS 27.0)    12.0 GB  [Consigliato]
   [✔] Swift Package Manager Cache                     946.6 MB  [Sicuro]
   ▸ 📦 Package Managers & SDK
   [✔] Homebrew Cache & Bottles                         92.3 MB  [Sicuro]
@@ -89,7 +91,7 @@ Totale selezionato: 33.9 GB (20/22 moduli attivi)
 | | `archives` | **TUTTI** gli archivi `.xcarchive` generati (`~/Library/Developer/Xcode/Archives`) | `[Sicuro]` | **Attivo [✔]** |
 | | `devicesupport` | Simboli di debug di dispositivi fisici iOS connessi in passato | `[Sicuro]` | **Attivo [✔]** |
 | | `xcode_cache` | Cache di indicizzazione e documentazione temporanea di Xcode IDE | `[Sicuro]` | **Attivo [✔]** |
-| | `simulators` | Rimuove runtime e simulatori indisponibili (`xcrun simctl`) e svuota la cache CoreSimulator | `[Consigliato]` | **Attivo [✔]** |
+| | `simulators` | Rimuove i vecchi runtime obsoleti e simulatori associati, conservando solo l'ultima versione (es. iOS 27.0) | `[Consigliato]` | **Attivo [✔]** |
 | | `swiftpm` | Cache globale di clone e build dei pacchetti SwiftPM (`~/Library/Caches/org.swift.swiftpm`) | `[Sicuro]` | **Attivo [✔]** |
 | **📦 Package Managers** | `brew` | Cache download vecchi pacchetti e formule (`brew cleanup --prune=all`) | `[Sicuro]` | **Attivo [✔]** |
 | | `cocoapods` | Cache archivio tarball pod scaricati (`~/Library/Caches/CocoaPods`) | `[Sicuro]` | **Attivo [✔]** |
