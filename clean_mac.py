@@ -1205,7 +1205,7 @@ def apply_saved_config_to_modules(modules: List[ModuleDef], saved_config: Dict[s
 # ==============================================================================
 
 def start_background_scanner(modules: List[ModuleDef]):
-    """Scansiona le dimensioni dei moduli in parallelo in background."""
+    """Scansiona le dimensioni dei moduli in parallelo in background usando thread daemon."""
     def _worker(m: ModuleDef):
         m.scan_in_progress = True
         try:
@@ -1217,8 +1217,11 @@ def start_background_scanner(modules: List[ModuleDef]):
             m.scan_in_progress = False
 
     def _scanner_pool():
-        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
-            list(executor.map(_worker, modules))
+        threads = []
+        for m in modules:
+            th = threading.Thread(target=_worker, args=(m,), daemon=True)
+            th.start()
+            threads.append(th)
 
     t = threading.Thread(target=_scanner_pool, daemon=True)
     t.start()
@@ -1228,38 +1231,61 @@ def start_background_scanner(modules: List[ModuleDef]):
 # TERMINAL UI INTERATTIVA (IN-PLACE ANSI & RAWMONITOR)
 # ==============================================================================
 
-def read_key(timeout: float = 0.08) -> Optional[str]:
-    """Legge un singolo tasto o sequenza di escape (frecce) da stdin in modo non bloccante."""
-    r, _, _ = select.select([sys.stdin], [], [], timeout)
+def read_key(fd: int, timeout: float = 0.08) -> Optional[str]:
+    """Legge un singolo tasto o sequenza di escape (frecce) da stdin in modo unbuffered e non bloccante."""
+    r, _, _ = select.select([fd], [], [], timeout)
     if not r:
         return None
-    ch = sys.stdin.read(1)
-    if ch == '\x1b':
-        # Possibile sequenza freccia
-        r2, _, _ = select.select([sys.stdin], [], [], 0.05)
+    try:
+        data = os.read(fd, 32)
+    except OSError:
+        return None
+    if not data:
+        return None
+
+    # Se è arrivato solo il byte ESC (\x1b), aspetta brevissimamente se seguono altri byte di sequenza
+    if data == b'\x1b':
+        r2, _, _ = select.select([fd], [], [], 0.03)
         if r2:
-            seq = sys.stdin.read(2)
-            if seq == '[A':
-                return 'UP'
-            elif seq == '[B':
-                return 'DOWN'
-            elif seq == '[C':
-                return 'RIGHT'
-            elif seq == '[D':
-                return 'LEFT'
-            elif seq == '[H':
-                return 'HOME'
-            elif seq == '[F':
-                return 'END'
+            try:
+                more = os.read(fd, 16)
+                data += more
+            except OSError:
+                pass
+
+    if data.startswith(b'\x1b'):
+        # Riconoscimento frecce standard ANSI (\x1b[A), SS3 (\x1bOA), e varianti con modificatori
+        if data in (b'\x1b[A', b'\x1bOA') or data.endswith(b'A'):
+            return 'UP'
+        elif data in (b'\x1b[B', b'\x1bOB') or data.endswith(b'B'):
+            return 'DOWN'
+        elif data in (b'\x1b[C', b'\x1bOC') or data.endswith(b'C'):
+            return 'RIGHT'
+        elif data in (b'\x1b[D', b'\x1bOD') or data.endswith(b'D'):
+            return 'LEFT'
+        elif data in (b'\x1b[H', b'\x1bOH'):
+            return 'HOME'
+        elif data in (b'\x1b[F', b'\x1bOF'):
+            return 'END'
+        elif data in (b'\x1b[5~', b'\x1b[5;2~'):
+            return 'PAGE_UP'
+        elif data in (b'\x1b[6~', b'\x1b[6;2~'):
+            return 'PAGE_DOWN'
+        elif data == b'\x1b':
             return 'ESC'
-        return 'ESC'
-    elif ch in ('\r', '\n'):
+        # Sequenza escape non riconosciuta: ignora per sicurezza, NON uscire!
+        return None
+    elif data in (b'\r', b'\n'):
         return 'ENTER'
-    elif ch == ' ':
+    elif data == b' ':
         return 'SPACE'
-    elif ch in ('\x03',):  # Ctrl+C
+    elif data == b'\x03':  # Ctrl+C
         raise KeyboardInterrupt
-    return ch
+
+    try:
+        return data.decode('utf-8', errors='ignore')
+    except Exception:
+        return None
 
 
 def run_interactive_tui(modules: List[ModuleDef], dry_run_initial: bool = True) -> Tuple[bool, bool, List[ModuleDef]]:
@@ -1303,11 +1329,25 @@ def run_interactive_tui(modules: List[ModuleDef], dry_run_initial: bool = True) 
         sys.stdout.write("\033[?25l")  # Nascondi cursore
         sys.stdout.flush()
 
+        needs_redraw = True
+        last_done_count = -1
+        prev_term_size = (-1, -1)
+
         while True:
             # Dimensioni terminale
             term_cols, term_lines = shutil.get_terminal_size((80, 24))
             term_cols = max(40, term_cols)
             term_lines = max(14, term_lines)
+
+            if (term_cols, term_lines) != prev_term_size:
+                prev_term_size = (term_cols, term_lines)
+                needs_redraw = True
+
+            # Controlla se nuove dimensioni sono arrivate dalla scansione background
+            current_done_count = sum(1 for m in modules if m.scan_done)
+            if current_done_count != last_done_count:
+                last_done_count = current_done_count
+                needs_redraw = True
 
             # Posizione attiva nella lista display
             active_disp_idx = selectable_indices[cursor_idx]
@@ -1319,118 +1359,138 @@ def run_interactive_tui(modules: List[ModuleDef], dry_run_initial: bool = True) 
             viewport_size = max(4, term_lines - (header_lines_count + footer_lines_count))
 
             # Aggiusta scorrimento offset
-            if active_disp_idx < offset:
-                offset = active_disp_idx
-            elif active_disp_idx >= offset + viewport_size:
-                offset = active_disp_idx - viewport_size + 1
-            offset = max(0, min(offset, len(display_items) - viewport_size))
-
-            visible_slice = display_items[offset : offset + viewport_size]
-
-            # Costruisci righe da stampare
-            lines: List[str] = []
-
-            # 1. HEADER
-            title_text = f" 🧹 Mac Developer Optimizer & Cleaner "
-            mode_badge = f"{Colors.YELLOW}[✔] 🔍 DRY-RUN (Simulazione){Colors.RESET}" if dry_run else f"{Colors.GREEN}[ ] ⚡ ESECUZIONE REALE{Colors.RESET}"
-            disk_line = f"Disco: {Colors.BOLD}{disk_info['free']}{Colors.RESET} liberi su {disk_info['total']} ({disk_info['percent']} usato)  |  Modalità: {mode_badge}"
-            lines.append(colorize("=" * (term_cols - 1), Colors.BOLD))
-            lines.append(f"{Colors.HEADER}{Colors.BOLD}{title_text}{Colors.RESET}")
-            lines.append(disk_line)
-            lines.append(colorize("-" * (term_cols - 1), Colors.DIM))
-            lines.append(f"{Colors.DIM}  (Usa [↑/↓] per muoverti, [Spazio] per abilitare/disabilitare, [d] Dry-run, [Invio] Avvia){Colors.RESET}")
-
-            # 2. INDICATORE SOPRA
-            if offset > 0:
-                lines.append(f"{Colors.DIM}  ▲ ... ({offset} voci sopra) ...{Colors.RESET}")
+            if len(display_items) <= viewport_size:
+                offset = 0
             else:
-                lines.append("")
+                if active_disp_idx < offset:
+                    offset = active_disp_idx
+                elif active_disp_idx >= offset + viewport_size:
+                    offset = active_disp_idx - viewport_size + 1
+                offset = max(0, min(offset, len(display_items) - viewport_size))
 
-            # 3. LISTA ELEMENTI
-            for item in visible_slice:
-                if item["type"] == "category":
-                    cat_str = f"  {Colors.BOLD}{Colors.HEADER}▸ {item['label']}{Colors.RESET}"
-                    lines.append(fit_line(cat_str, term_cols))
+            if needs_redraw:
+                visible_slice = display_items[offset : offset + viewport_size]
+
+                # Costruisci righe da stampare
+                lines: List[str] = []
+
+                # 1. HEADER
+                title_text = f" 🧹 Mac Developer Optimizer & Cleaner "
+                mode_badge = f"{Colors.YELLOW}[✔] 🔍 DRY-RUN (Simulazione){Colors.RESET}" if dry_run else f"{Colors.GREEN}[ ] ⚡ ESECUZIONE REALE{Colors.RESET}"
+                disk_line = f"Disco: {Colors.BOLD}{disk_info['free']}{Colors.RESET} liberi su {disk_info['total']} ({disk_info['percent']} usato)  |  Modalità: {mode_badge}"
+                lines.append(colorize("=" * (term_cols - 1), Colors.BOLD))
+                lines.append(f"{Colors.HEADER}{Colors.BOLD}{title_text}{Colors.RESET}")
+                lines.append(disk_line)
+                lines.append(colorize("-" * (term_cols - 1), Colors.DIM))
+                lines.append(f"{Colors.DIM}  (Usa [↑/↓] per muoverti, [Spazio] per abilitare/disabilitare, [d] Dry-run, [Invio] Avvia){Colors.RESET}")
+
+                # 2. INDICATORE SOPRA
+                if offset > 0:
+                    lines.append(f"{Colors.DIM}  ▲ ... ({offset} voci sopra) ...{Colors.RESET}")
                 else:
-                    m = item["module"]
-                    is_active = (m == active_module)
+                    lines.append("")
 
-                    # Simbolo Checkmark
-                    if m.selected:
-                        chk_str = f"{Colors.GREEN}{Colors.BOLD}[✔]{Colors.RESET}"
+                # 3. LISTA ELEMENTI
+                for item in visible_slice:
+                    if item["type"] == "category":
+                        cat_str = f"  {Colors.BOLD}{Colors.HEADER}▸ {item['label']}{Colors.RESET}"
+                        lines.append(fit_line(cat_str, term_cols))
                     else:
-                        chk_str = f"{Colors.DIM}[ ]{Colors.RESET}"
+                        m = item["module"]
+                        is_active = (m == active_module)
 
-                    # Dimensione
-                    if m.scan_done:
-                        sz_str = f"{format_bytes(m.estimated_bytes):>9}"
-                    else:
-                        sz_str = f"{Colors.DIM}(in calcolo){Colors.RESET}"
+                        # Simbolo Checkmark
+                        if m.selected:
+                            chk_str = f"{Colors.GREEN}{Colors.BOLD}[✔]{Colors.RESET}"
+                        else:
+                            chk_str = f"{Colors.DIM}[ ]{Colors.RESET}"
 
-                    # Badge rischio
-                    if m.risk_level == "caution":
-                        risk_str = f"{Colors.YELLOW}[Attenzione]{Colors.RESET}"
-                    elif m.risk_level == "recommended":
-                        risk_str = f"{Colors.CYAN}[Consigliato]{Colors.RESET}"
-                    else:
-                        risk_str = f"{Colors.GREEN}[Sicuro]{Colors.RESET}"
+                        # Dimensione
+                        if m.scan_done:
+                            sz_str = f"{format_bytes(m.estimated_bytes):>9}"
+                        else:
+                            sz_str = f"{Colors.DIM}(in calcolo){Colors.RESET}"
 
-                    name_w = max(18, term_cols - 40)
-                    t_name = m.name[:name_w].ljust(name_w)
+                        # Badge rischio
+                        if m.risk_level == "caution":
+                            risk_str = f"{Colors.YELLOW}[Attenzione]{Colors.RESET}"
+                        elif m.risk_level == "recommended":
+                            risk_str = f"{Colors.CYAN}[Consigliato]{Colors.RESET}"
+                        else:
+                            risk_str = f"{Colors.GREEN}[Sicuro]{Colors.RESET}"
 
-                    if is_active:
-                        prefix = f"{Colors.CYAN}{Colors.BOLD}❯{Colors.RESET}"
-                        line_content = f"{prefix} {chk_str} {Colors.BOLD}{t_name}{Colors.RESET}  {sz_str}  {risk_str}"
-                    else:
-                        prefix = " "
-                        line_content = f"{prefix} {chk_str} {t_name}  {sz_str}  {risk_str}"
+                        name_w = max(18, term_cols - 40)
+                        t_name = m.name[:name_w].ljust(name_w)
 
-                    lines.append(fit_line(line_content, term_cols))
+                        if is_active:
+                            prefix = f"{Colors.CYAN}{Colors.BOLD}❯{Colors.RESET}"
+                            line_content = f"{prefix} {chk_str} {Colors.BOLD}{t_name}{Colors.RESET}  {sz_str}  {risk_str}"
+                        else:
+                            prefix = " "
+                            line_content = f"{prefix} {chk_str} {t_name}  {sz_str}  {risk_str}"
 
-            # Riempi righe vuote se fine elenco per stabilizzare altezza
-            while len(visible_slice) < viewport_size:
-                lines.append("")
-                visible_slice.append({"type": "blank"})
+                        lines.append(fit_line(line_content, term_cols))
 
-            # 4. INDICATORE SOTTO
-            remaining_below = len(display_items) - (offset + viewport_size)
-            if remaining_below > 0:
-                lines.append(f"{Colors.DIM}  ▼ ... ({remaining_below} voci sotto) ...{Colors.RESET}")
-            else:
-                lines.append("")
+                # Riempi righe vuote se fine elenco per stabilizzare altezza
+                while len(visible_slice) < viewport_size:
+                    lines.append("")
+                    visible_slice.append({"type": "blank"})
 
-            # 5. FOOTER
-            lines.append(colorize("-" * (term_cols - 1), Colors.DIM))
-            desc_text = f"ℹ️  {active_module.description}"
-            lines.append(fit_line(colorize(desc_text, Colors.CYAN), term_cols))
+                # 4. INDICATORE SOTTO
+                remaining_below = len(display_items) - (offset + viewport_size)
+                if remaining_below > 0:
+                    lines.append(f"{Colors.DIM}  ▼ ... ({remaining_below} voci sotto) ...{Colors.RESET}")
+                else:
+                    lines.append("")
 
-            sel_count = sum(1 for m in modules if m.selected)
-            sel_bytes = sum(m.estimated_bytes for m in modules if m.selected)
-            stat_text = f"Totale selezionato: {Colors.BOLD}{format_bytes(sel_bytes)}{Colors.RESET} ({sel_count}/{len(modules)} moduli attivi)"
-            lines.append(fit_line(stat_text, term_cols))
+                # 5. FOOTER
+                lines.append(colorize("-" * (term_cols - 1), Colors.DIM))
+                desc_text = f"ℹ️  {active_module.description}"
+                lines.append(fit_line(colorize(desc_text, Colors.CYAN), term_cols))
 
-            help_keys = "[↑/↓] Naviga  [Spazio] Attiva/Disattiva  [a] Tutti  [n] Nessuno  [d] Dry-run  [Invio] Esegui  [q] Esci"
-            lines.append(fit_line(colorize(help_keys, Colors.DIM), term_cols))
+                sel_count = sum(1 for m in modules if m.selected)
+                sel_bytes = sum(m.estimated_bytes for m in modules if m.selected)
+                stat_text = f"Totale selezionato: {Colors.BOLD}{format_bytes(sel_bytes)}{Colors.RESET} ({sel_count}/{len(modules)} moduli attivi)"
+                lines.append(fit_line(stat_text, term_cols))
 
-            # --- RENDERING ANSI PULITO ED EFFICIENTE ---
-            if prev_rendered_lines > 0:
-                sys.stdout.write(f"\r\033[{prev_rendered_lines}A\033[0J")
-            output_chunk = "\n".join(lines) + "\n"
-            sys.stdout.write(output_chunk)
-            sys.stdout.flush()
-            prev_rendered_lines = len(lines)
+                help_keys = "[↑/↓] Naviga  [Spazio] Attiva/Disattiva  [a] Tutti  [n] Nessuno  [d] Dry-run  [Invio] Esegui  [q] Esci"
+                lines.append(fit_line(colorize(help_keys, Colors.DIM), term_cols))
+
+                # --- RENDERING ANSI PULITO ED EFFICIENTE ---
+                if prev_rendered_lines > 0:
+                    sys.stdout.write(f"\r\033[{prev_rendered_lines}A\033[0J")
+                output_chunk = "\n".join(lines) + "\n"
+                sys.stdout.write(output_chunk)
+                sys.stdout.flush()
+                prev_rendered_lines = len(lines)
+                needs_redraw = False
 
             # --- INPUT UTENTE ---
-            key = read_key(timeout=0.08)
+            key = read_key(fd, timeout=0.08)
             if key is None:
                 continue
 
+            needs_redraw = True
             if key in ('UP', 'k', 'K'):
                 cursor_idx = max(0, cursor_idx - 1)
             elif key in ('DOWN', 'j', 'J'):
                 cursor_idx = min(len(selectable_indices) - 1, cursor_idx + 1)
+            elif key == 'PAGE_UP':
+                cursor_idx = max(0, cursor_idx - 5)
+            elif key == 'PAGE_DOWN':
+                cursor_idx = min(len(selectable_indices) - 1, cursor_idx + 5)
+            elif key == 'HOME':
+                cursor_idx = 0
+            elif key == 'END':
+                cursor_idx = len(selectable_indices) - 1
             elif key == 'SPACE':
                 active_module.selected = not active_module.selected
+                persist_current_state()
+            elif key == 'RIGHT':
+                active_module.selected = True
+                persist_current_state()
+            elif key == 'LEFT':
+                active_module.selected = False
                 persist_current_state()
             elif key in ('a', 'A'):
                 for m in modules:
@@ -1450,11 +1510,18 @@ def run_interactive_tui(modules: List[ModuleDef], dry_run_initial: bool = True) 
                 start_background_scanner(modules)
             elif key in ('q', 'Q', 'ESC'):
                 persist_current_state()
+                if prev_rendered_lines > 0:
+                    sys.stdout.write(f"\r\033[{prev_rendered_lines}A\033[0J")
+                    sys.stdout.flush()
                 return False, dry_run, modules
             elif key == 'ENTER':
                 persist_current_state()
+                sel_count = sum(1 for m in modules if m.selected)
                 if sel_count == 0:
                     continue
+                if prev_rendered_lines > 0:
+                    sys.stdout.write(f"\r\033[{prev_rendered_lines}A\033[0J")
+                    sys.stdout.flush()
                 return True, dry_run, modules
 
     finally:
@@ -1623,8 +1690,8 @@ Esempi di utilizzo:
     if use_tui:
         confirmed, dry_run, configured_modules = run_interactive_tui(all_modules, dry_run_initial=initial_dry_run)
         if not confirmed:
-            print("\nOperazione annullata. Nessuna modifica apportata.")
-            return
+            print("\nOperazione annullata. Nessuna modifica apportata.\n")
+            os._exit(0)
         selected = [m for m in configured_modules if m.selected]
         if not selected:
             print("\nNessun modulo selezionato. Uscita.")
