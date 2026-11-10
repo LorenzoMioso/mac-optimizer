@@ -24,14 +24,23 @@ from mac_optimizer.modules.package_managers import (
     scan_gradle_android_caches, clean_gradle_android_caches,
     scan_python_pip_cache, clean_python_pip_cache,
     scan_flutter_cache, clean_flutter_cache,
+    scan_dart_analysis_cache, clean_dart_analysis_cache,
+    scan_pub_hosted_cache, clean_pub_hosted_cache,
+    scan_gradle_wrappers, clean_gradle_wrappers,
 )
 from mac_optimizer.modules.developer_tools import (
     scan_vscode_extensions_cache, clean_vscode_extensions_cache,
+    scan_vscode_caches, clean_vscode_caches,
+    scan_maestro_tests, clean_maestro_tests,
     scan_docker_system_prune, clean_docker_system_prune,
 )
 from mac_optimizer.modules.apps import (
     scan_spotify_cache, clean_spotify_cache,
     scan_browser_caches, clean_browser_caches,
+    scan_discord_cache, clean_discord_cache,
+)
+from mac_optimizer.modules.workspace import (
+    scan_workspace_builds, clean_workspace_builds,
 )
 from mac_optimizer.modules.system import (
     scan_trash_can, clean_trash_can,
@@ -131,6 +140,16 @@ def create_all_modules() -> List[ModuleDef]:
             scan_func=scan_swiftpm_cache,
             clean_func=clean_swiftpm_cache
         ),
+        ModuleDef(
+            id="workspace_builds",
+            name="Build Artifacts Progetti Locali (build/ & .dart_tool/)",
+            category="🍎 Sviluppo iOS & macOS",
+            description="Cartelle build/ e .dart_tool/ nei repository locali (~/Documents/GitHub).",
+            default_selected=True,
+            risk_level="recommended",
+            scan_func=scan_workspace_builds,
+            clean_func=clean_workspace_builds
+        ),
 
         # --- 📦 Package Managers & SDK ---
         ModuleDef(
@@ -193,6 +212,36 @@ def create_all_modules() -> List[ModuleDef]:
             scan_func=scan_flutter_cache,
             clean_func=clean_flutter_cache
         ),
+        ModuleDef(
+            id="dart_analysis",
+            name="Dart Analysis Server Cache (~/.dartServer)",
+            category="📦 Package Managers & SDK",
+            description="Cache AST e indici semantici in ~/.dartServer/.analysis-driver. Si ricrea automaticamente.",
+            default_selected=True,
+            risk_level="recommended",
+            scan_func=scan_dart_analysis_cache,
+            clean_func=clean_dart_analysis_cache
+        ),
+        ModuleDef(
+            id="pub_hosted",
+            name="Dart / Flutter Pub Hosted Cache (~/.pub-cache/hosted)",
+            category="📦 Package Managers & SDK",
+            description="Cache pacchetti scaricati da pub.dev (riscaricabili con flutter pub get).",
+            default_selected=False,
+            risk_level="safe",
+            scan_func=scan_pub_hosted_cache,
+            clean_func=clean_pub_hosted_cache
+        ),
+        ModuleDef(
+            id="gradle_wrappers",
+            name="Gradle Wrapper Distributions Cache",
+            category="📦 Package Managers & SDK",
+            description="Archivi zip e cartelle scompattate in ~/.gradle/wrapper/dists.",
+            default_selected=True,
+            risk_level="safe",
+            scan_func=scan_gradle_wrappers,
+            clean_func=clean_gradle_wrappers
+        ),
 
         # --- 💻 Editor & Strumenti ---
         ModuleDef(
@@ -204,6 +253,26 @@ def create_all_modules() -> List[ModuleDef]:
             risk_level="safe",
             scan_func=scan_vscode_extensions_cache,
             clean_func=clean_vscode_extensions_cache
+        ),
+        ModuleDef(
+            id="vscode_caches",
+            name="VS Code: Cache Interne, VSIX & Log",
+            category="💻 Editor & Strumenti",
+            description="Pacchetti installer .vsix obsoleti, cache bytecode V8 e vecchi log di VS Code.",
+            default_selected=True,
+            risk_level="safe",
+            scan_func=scan_vscode_caches,
+            clean_func=clean_vscode_caches
+        ),
+        ModuleDef(
+            id="maestro_tests",
+            name="Maestro E2E Test Artifacts (~/.maestro/tests)",
+            category="💻 Editor & Strumenti",
+            description="Video, screenshot e log temporanei delle esecuzioni passate dei test Maestro.",
+            default_selected=True,
+            risk_level="safe",
+            scan_func=scan_maestro_tests,
+            clean_func=clean_maestro_tests
         ),
         ModuleDef(
             id="docker",
@@ -226,6 +295,16 @@ def create_all_modules() -> List[ModuleDef]:
             risk_level="safe",
             scan_func=scan_spotify_cache,
             clean_func=clean_spotify_cache
+        ),
+        ModuleDef(
+            id="discord_cache",
+            name="Discord Streaming & Media Cache",
+            category="🌐 Cache App & Browser",
+            description="Cache temporanea di immagini, video e rendering di Discord in Application Support.",
+            default_selected=True,
+            risk_level="safe",
+            scan_func=scan_discord_cache,
+            clean_func=clean_discord_cache
         ),
         ModuleDef(
             id="browser",

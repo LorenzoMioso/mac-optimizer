@@ -10,6 +10,9 @@ from mac_optimizer.modules.package_managers import (
     scan_gradle_android_caches, clean_gradle_android_caches,
     scan_python_pip_cache, clean_python_pip_cache,
     scan_flutter_cache, clean_flutter_cache,
+    scan_dart_analysis_cache, clean_dart_analysis_cache,
+    scan_pub_hosted_cache, clean_pub_hosted_cache,
+    scan_gradle_wrappers, clean_gradle_wrappers,
 )
 
 
@@ -33,6 +36,9 @@ def test_package_managers_dry_run(monkeypatch):
         clean_gradle_android_caches,
         clean_python_pip_cache,
         clean_flutter_cache,
+        clean_dart_analysis_cache,
+        clean_pub_hosted_cache,
+        clean_gradle_wrappers,
     ]
 
     for clean_fn in modules_clean_funcs:
@@ -40,3 +46,31 @@ def test_package_managers_dry_run(monkeypatch):
         assert res.name
         assert isinstance(res.freed_bytes, int)
         assert isinstance(res.details, list)
+
+
+def test_dart_analysis_and_gradle_wrappers_real_clean(tmp_path, monkeypatch):
+    fake_home = tmp_path / "home"
+    fake_dart = fake_home / ".dartServer" / ".analysis-driver"
+    fake_dart.mkdir(parents=True)
+    (fake_dart / "cache_file.bin").write_text("dummy cache")
+
+    fake_gradle = fake_home / ".gradle" / "wrapper" / "dists"
+    fake_gradle.mkdir(parents=True)
+    (fake_gradle / "gradle-dist.zip").write_text("gradle zip")
+
+    def mock_expanduser(p):
+        if p.startswith("~/.dartServer"):
+            return str(fake_home / p.replace("~/", ""))
+        if p.startswith("~/.gradle"):
+            return str(fake_home / p.replace("~/", ""))
+        return p
+
+    monkeypatch.setattr("os.path.expanduser", mock_expanduser)
+
+    res_dart = clean_dart_analysis_cache(dry_run=False)
+    assert res_dart.freed_bytes > 0
+    assert not (fake_dart / "cache_file.bin").exists()
+
+    res_gradle = clean_gradle_wrappers(dry_run=False)
+    assert res_gradle.freed_bytes > 0
+    assert not (fake_gradle / "gradle-dist.zip").exists()

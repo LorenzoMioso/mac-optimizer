@@ -6,6 +6,10 @@ import os
 from mac_optimizer.modules.developer_tools import (
     scan_vscode_extensions_cache,
     clean_vscode_extensions_cache,
+    scan_vscode_caches,
+    clean_vscode_caches,
+    scan_maestro_tests,
+    clean_maestro_tests,
     scan_docker_system_prune,
     clean_docker_system_prune,
 )
@@ -39,3 +43,41 @@ def test_vscode_extensions_deduplication(tmp_path, monkeypatch):
 def test_docker_system_prune():
     res = clean_docker_system_prune(dry_run=True)
     assert res.name == "Docker System Prune"
+
+
+def test_vscode_caches_clean(tmp_path, monkeypatch):
+    code_dir = tmp_path / "Code"
+    vsix_dir = code_dir / "CachedExtensionVSIXs"
+    vsix_dir.mkdir(parents=True)
+    (vsix_dir / "ext.vsix").write_text("dummy vsix")
+
+    monkeypatch.setattr(
+        "mac_optimizer.modules.developer_tools.VSCODE_CACHE_PATHS",
+        [(str(vsix_dir), "Mock VSIX")]
+    )
+
+    assert scan_vscode_caches() > 0
+    res_dry = clean_vscode_caches(dry_run=True)
+    assert res_dry.freed_bytes > 0
+    assert (vsix_dir / "ext.vsix").exists()
+
+    res_real = clean_vscode_caches(dry_run=False)
+    assert res_real.freed_bytes > 0
+    assert not (vsix_dir / "ext.vsix").exists()
+
+
+def test_maestro_tests_clean(tmp_path, monkeypatch):
+    maestro_dir = tmp_path / ".maestro" / "tests"
+    maestro_dir.mkdir(parents=True)
+    (maestro_dir / "run_1").mkdir()
+    (maestro_dir / "run_1" / "video.mp4").write_text("dummy video")
+
+    monkeypatch.setattr("os.path.expanduser", lambda p: str(maestro_dir) if "maestro" in p else p)
+
+    assert scan_maestro_tests() > 0
+    res_dry = clean_maestro_tests(dry_run=True)
+    assert res_dry.freed_bytes > 0
+
+    res_real = clean_maestro_tests(dry_run=False)
+    assert res_real.freed_bytes > 0
+    assert not (maestro_dir / "run_1" / "video.mp4").exists()

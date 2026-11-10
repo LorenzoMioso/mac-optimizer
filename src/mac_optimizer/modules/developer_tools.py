@@ -5,7 +5,7 @@ modules/developer_tools.py - Pulizia strumenti di sviluppo: VS Code estensioni o
 import os
 import shutil
 from mac_optimizer.models import CleanResult
-from mac_optimizer.utils import run_cmd, fast_get_path_size, format_bytes
+from mac_optimizer.utils import run_cmd, fast_get_path_size, format_bytes, safe_remove_directory_contents
 
 
 def scan_vscode_extensions_cache() -> int:
@@ -105,4 +105,71 @@ def clean_docker_system_prune(dry_run: bool) -> CleanResult:
             result.add_detail("docker system prune eseguito con successo su container, immagini e volumi orfani.")
         else:
             result.add_detail(f"docker system prune terminato con codice {code}: {err.strip()}")
+    return result
+
+
+VSCODE_CACHE_PATHS = [
+    ("~/Library/Application Support/Code/CachedExtensionVSIXs", "Pacchetti VSIX installer estensioni"),
+    ("~/Library/Application Support/Code/CachedData", "Bytecode V8 e cache JS compilata"),
+    ("~/Library/Application Support/Code/logs", "Log diagnostici sessioni passate"),
+    ("~/Library/Application Support/Code/Cache", "Cache HTTP Chromium di VS Code"),
+]
+
+
+def scan_vscode_caches() -> int:
+    total = 0
+    for path_str, _ in VSCODE_CACHE_PATHS:
+        p = os.path.expanduser(path_str)
+        if os.path.exists(p):
+            total += fast_get_path_size(p, timeout=5)
+    return total
+
+
+def clean_vscode_caches(dry_run: bool) -> CleanResult:
+    result = CleanResult("VS Code: Cache Interne, VSIX & Log")
+    total_freed = 0
+    found_any = False
+
+    for path_str, desc in VSCODE_CACHE_PATHS:
+        p = os.path.expanduser(path_str)
+        if os.path.isdir(p):
+            found_any = True
+            sz = fast_get_path_size(p, timeout=5)
+            total_freed += sz
+            base = os.path.basename(p)
+            if dry_run:
+                result.add_detail(f"[Simulazione] {base} ({desc}): {format_bytes(sz)}")
+            else:
+                cnt, _ = safe_remove_directory_contents(p)
+                result.items_count += cnt
+                result.add_detail(f"Svuotato {base} ({desc}): {format_bytes(sz)}")
+
+    result.freed_bytes = total_freed
+    if not found_any:
+        result.add_detail("Nessuna cache interna di VS Code trovata.")
+    else:
+        result.add_detail("Nota: impostazioni, estensioni installate e workspace rimangono intatti al 100%.")
+    return result
+
+
+def scan_maestro_tests() -> int:
+    p = os.path.expanduser("~/.maestro/tests")
+    return fast_get_path_size(p, timeout=10)
+
+
+def clean_maestro_tests(dry_run: bool) -> CleanResult:
+    result = CleanResult("Maestro E2E Test Artifacts")
+    p = os.path.expanduser("~/.maestro/tests")
+    if not os.path.isdir(p):
+        result.add_detail("Nessun report Maestro trovato in ~/.maestro/tests.")
+        return result
+
+    sz = fast_get_path_size(p, timeout=10)
+    result.freed_bytes = sz
+    if dry_run:
+        result.add_detail(f"[Simulazione] Video, screenshot e log test Maestro eliminabili: {format_bytes(sz)}")
+    else:
+        cnt, _ = safe_remove_directory_contents(p)
+        result.items_count = cnt
+        result.add_detail(f"Sessioni di test Maestro rimosse: liberati {format_bytes(sz)}.")
     return result

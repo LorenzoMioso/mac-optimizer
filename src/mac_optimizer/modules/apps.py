@@ -69,3 +69,46 @@ def clean_browser_caches(dry_run: bool) -> CleanResult:
     else:
         result.add_detail("Nota di sicurezza: cookie, credenziali salvate, segnalibri e cronologia restano intatti al 100%.")
     return result
+
+
+DISCORD_CACHE_PATHS = [
+    ("~/Library/Application Support/discord/Cache", "Cache media e streaming"),
+    ("~/Library/Application Support/discord/Code Cache", "Code cache Javascript V8"),
+    ("~/Library/Application Support/discord/GPUCache", "Cache rendering GPU"),
+]
+
+
+def scan_discord_cache() -> int:
+    total = 0
+    for path_str, _ in DISCORD_CACHE_PATHS:
+        p = os.path.expanduser(path_str)
+        if os.path.isdir(p):
+            total += fast_get_path_size(p, timeout=5)
+    return total
+
+
+def clean_discord_cache(dry_run: bool) -> CleanResult:
+    result = CleanResult("Discord Streaming & Media Cache")
+    total_sz = 0
+    found_any = False
+
+    for path_str, desc in DISCORD_CACHE_PATHS:
+        p = os.path.expanduser(path_str)
+        if os.path.isdir(p):
+            found_any = True
+            sz = fast_get_path_size(p, timeout=5)
+            total_sz += sz
+            base = os.path.basename(p)
+            if dry_run:
+                result.add_detail(f"[Simulazione] {base} ({desc}): {format_bytes(sz)}")
+            else:
+                cnt, _ = safe_remove_directory_contents(p)
+                result.items_count += cnt
+                result.add_detail(f"Svuotata {base} ({desc}): {format_bytes(sz)}")
+
+    result.freed_bytes = total_sz
+    if not found_any:
+        result.add_detail("Nessuna cache di Discord trovata.")
+    else:
+        result.add_detail("Nota: account, credenziali e cronologia chat restano intatti al 100%.")
+    return result

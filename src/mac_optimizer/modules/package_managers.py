@@ -173,3 +173,71 @@ def clean_flutter_cache(dry_run: bool) -> CleanResult:
         result.items_count = cnt
         result.add_detail(f"Clone temporanei Git di Dart/Flutter rimossi ({format_bytes(sz)}).")
     return result
+
+
+def scan_dart_analysis_cache() -> int:
+    p = os.path.expanduser("~/.dartServer/.analysis-driver")
+    return fast_get_path_size(p, timeout=10)
+
+
+def clean_dart_analysis_cache(dry_run: bool) -> CleanResult:
+    result = CleanResult("Dart Analysis Server Cache")
+    p = os.path.expanduser("~/.dartServer/.analysis-driver")
+    if not os.path.isdir(p):
+        result.add_detail("Nessuna cache di analisi Dart trovata in ~/.dartServer/.analysis-driver.")
+        return result
+    sz = fast_get_path_size(p, timeout=10)
+    result.freed_bytes = sz
+    if dry_run:
+        result.add_detail(f"[Simulazione] Cache analisi semantica Dart eliminabile: {format_bytes(sz)}")
+        result.add_detail("  (Il Dart language server ricreerà la cache per i file attivi al prossimo avvio)")
+    else:
+        cnt, _ = safe_remove_directory_contents(p)
+        result.items_count = cnt
+        result.add_detail(f"Cache semantica Dart rimossa: liberati {format_bytes(sz)}.")
+    return result
+
+
+def scan_pub_hosted_cache() -> int:
+    p = os.path.expanduser("~/.pub-cache/hosted")
+    return fast_get_path_size(p, timeout=10)
+
+
+def clean_pub_hosted_cache(dry_run: bool) -> CleanResult:
+    result = CleanResult("Dart / Flutter Pub Hosted Cache")
+    p = os.path.expanduser("~/.pub-cache/hosted")
+    if not os.path.isdir(p):
+        result.add_detail("Nessuna cartella ~/.pub-cache/hosted trovata.")
+        return result
+    sz = fast_get_path_size(p, timeout=10)
+    result.freed_bytes = sz
+    if dry_run:
+        result.add_detail(f"[Simulazione] Pacchetti hosted pub.dev rimovibili: {format_bytes(sz)}")
+        result.add_detail("  (I pacchetti necessari ai progetti verranno riscaricati da pub.dev con 'flutter pub get')")
+    else:
+        cnt, _ = safe_remove_directory_contents(p)
+        result.items_count = cnt
+        result.add_detail(f"Cache pacchetti hosted di pub.dev rimossa: liberati {format_bytes(sz)}.")
+    return result
+
+
+def scan_gradle_wrappers() -> int:
+    p = os.path.expanduser("~/.gradle/wrapper/dists")
+    return fast_get_path_size(p, timeout=10)
+
+
+def clean_gradle_wrappers(dry_run: bool) -> CleanResult:
+    result = CleanResult("Gradle Wrapper Distributions")
+    p = os.path.expanduser("~/.gradle/wrapper/dists")
+    if not os.path.isdir(p):
+        result.add_detail("Nessuna distribuzione Gradle trovata in ~/.gradle/wrapper/dists.")
+        return result
+    sz = fast_get_path_size(p, timeout=10)
+    result.freed_bytes = sz
+    if dry_run:
+        result.add_detail(f"[Simulazione] Vecchie distribuzioni Gradle rimovibili: {format_bytes(sz)}")
+    else:
+        cnt, _ = safe_remove_directory_contents(p)
+        result.items_count = cnt
+        result.add_detail(f"Vecchie distribuzioni Gradle eliminate: liberati {format_bytes(sz)}.")
+    return result
