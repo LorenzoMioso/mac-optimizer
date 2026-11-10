@@ -175,10 +175,16 @@ class MacOptimizerApp(App):
 
     def on_selection_list_selection_highlighted(self, event: SelectionList.SelectionHighlighted) -> None:
         """Aggiorna la descrizione in basso quando il cursore si sposta."""
-        opt = event.selection_list.get_option_at_index(event.index)
-        if opt and opt.value in self.modules_by_id:
-            m = self.modules_by_id[opt.value]
+        sel = getattr(event, "selection", None)
+        if not sel:
+            return
+        val = getattr(sel, "value", None)
+        if val in self.modules_by_id:
+            m = self.modules_by_id[val]
             self.query_one("#module_desc", Static).update(f"ℹ️  {m.description}")
+        elif isinstance(val, str) and val.startswith("cat_"):
+            cat_name = val[4:]
+            self.query_one("#module_desc", Static).update(f"📁 Categoria: {cat_name}")
 
     @work(thread=True)
     def scan_sizes_worker(self) -> None:

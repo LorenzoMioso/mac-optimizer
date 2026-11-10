@@ -18,6 +18,14 @@ def test_tui_app_navigation_and_bindings():
             sl = app.query_one(SelectionList)
             assert sl.option_count >= 20
 
+            # Testa pressione frecce su e giù per verificare l'evento on_selection_list_selection_highlighted
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.press("up")
+
+            # Testa barra spaziatrice per commutare elemento
+            await pilot.press("space")
+
             # Verifica stato iniziale dry run
             assert app.dry_run is True
 
