@@ -5,7 +5,7 @@ Test headless per l'applicazione Terminal UI Textual in mac_optimizer.tui.app.
 import asyncio
 from mac_optimizer.registry import create_all_modules
 from mac_optimizer.tui.app import MacOptimizerApp
-from textual.widgets import SelectionList
+from textual.widgets import OptionList
 
 
 def test_tui_app_navigation_and_bindings():
@@ -15,16 +15,13 @@ def test_tui_app_navigation_and_bindings():
         app._stop_scan = True  # Disabilita worker in background durante il test unitario
 
         async with app.run_test() as pilot:
-            sl = app.query_one(SelectionList)
-            assert sl.option_count >= 20
+            ol = app.query_one(OptionList)
+            assert ol.option_count >= 20
 
-            # Testa pressione frecce su e giù per verificare l'evento on_selection_list_selection_highlighted
+            # Testa pressione frecce su e giù per verificare l'evento on_option_list_option_highlighted
             await pilot.press("down")
             await pilot.press("down")
             await pilot.press("up")
-
-            # Testa barra spaziatrice per commutare elemento
-            await pilot.press("space")
 
             # Verifica stato iniziale dry run
             assert app.dry_run is True
@@ -36,12 +33,16 @@ def test_tui_app_navigation_and_bindings():
             await pilot.press("d")
             assert app.dry_run is True
 
+            # Testa barra spaziatrice per commutare elemento
+            init_selected = modules[0].selected
+            await pilot.press("space")
+
             # Testa deselezione totale con 'n'
             await pilot.press("n")
-            assert len(sl.selected) == 0
+            assert sum(1 for m in app.modules if m.selected) == 0
 
             # Testa selezione tutti con 'a'
             await pilot.press("a")
-            assert len(sl.selected) > 0
+            assert sum(1 for m in app.modules if m.selected) > 0
 
     asyncio.run(_run())
